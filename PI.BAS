@@ -1,0 +1,332 @@
+10 REM ============================================
+20 REM PI.BAS - Pi with n decimal places
+30 REM Algorithm:
+40 REM   PI = 8*ATN(1/3) + 4*ATN(1/7)
+50 REM Multiprecision in base 100 (2 decimal digits/cell)
+60 REM ============================================
+
+70 MAXN = 200
+80 BASE = 100
+
+90 X$ = COMMAND$
+100 IF LEN(X$) <> 0 THEN GOTO 140
+110 PRINT "HOW MANY DECIMAL PLACES?"
+120 INPUT X$
+130 GOTO 160
+
+140 REM Use COMMAND$
+150 REM X$ remains as read
+
+160 N = VAL(X$)
+170 IF N >= 1 THEN GOTO 200
+180 PRINT "N MUST BE >= 1"
+190 END
+
+200 IF N <= MAXN THEN GOTO 230
+210 PRINT "MAXIMUM "; MAXN; " DIGITS"
+220 END
+
+230 REM Number of base-100 cells for fractional part:
+240 REM CEIL(N/2) + 2 guard cells
+250 FR = (N + 1) / 2
+260 TOT = FR + 3
+
+270 REM Work arrays
+280 DIM T(110)
+290 DIM W(110)
+300 DIM A(110)
+310 DIM B(110)
+320 DIM P(110)
+
+330 PRINT "CALCULATING PI WITH "; N; " DECIMAL PLACES ..."
+
+340 REM Clear all arrays first
+350 GOSUB 1000
+
+360 REM ============================================
+370 REM A = ATN(1/3)
+380 REM ============================================
+390 GOSUB 1100
+400 Q = 3
+410 Q2 = 9
+420 GOSUB 2000
+
+430 REM ============================================
+440 REM B = ATN(1/7)
+450 REM A is preserved!
+460 REM ============================================
+470 GOSUB 1200
+480 Q = 7
+490 Q2 = 49
+500 GOSUB 3000
+
+510 REM ============================================
+520 REM P = 8*A + 4*B
+530 REM ============================================
+540 GOSUB 4000
+
+550 REM ============================================
+560 REM Build output in OUT$ and print once
+570 REM ============================================
+580 OUT$ = "PI = 3."
+590 I = 2
+600 DLEFT = N
+610 IF DLEFT > 0 THEN GOTO 640
+620 PRINT OUT$
+630 END
+
+640 V = P(I)
+650 Z1 = V / 10
+660 Z2 = V - Z1 * 10
+670 OUT$ = OUT$ + CHR$(48 + Z1)
+680 IF DLEFT = 1 THEN GOTO 710
+690 OUT$ = OUT$ + CHR$(48 + Z2)
+700 GOTO 720
+710 REM only one digit still needed
+720 DLEFT = DLEFT - 2
+730 I = I + 1
+740 IF DLEFT > 0 THEN GOTO 640
+750 PRINT OUT$
+760 END
+
+999 REM ============================================
+1000 REM Clear all arrays T,W,A,B,P
+1010 I = 1
+1020 IF I > TOT THEN RETURN
+1030 LET T(I) = 0
+1040 LET W(I) = 0
+1050 LET A(I) = 0
+1060 LET B(I) = 0
+1070 LET P(I) = 0
+1080 I = I + 1
+1090 GOTO 1020
+
+1099 REM ============================================
+1100 REM Clear T,W,A (for first arctan component)
+1110 I = 1
+1120 IF I > TOT THEN RETURN
+1130 LET T(I) = 0
+1140 LET W(I) = 0
+1150 LET A(I) = 0
+1160 I = I + 1
+1170 GOTO 1120
+
+1199 REM ============================================
+1200 REM Clear T,W,B (for second arctan component)
+1210 I = 1
+1220 IF I > TOT THEN RETURN
+1230 LET T(I) = 0
+1240 LET W(I) = 0
+1250 LET B(I) = 0
+1260 I = I + 1
+1270 GOTO 1220
+
+1999 REM ============================================
+2000 REM A = ATN(1/Q), uses Q and Q2
+2010 LET T(1) = 1
+2020 D = Q
+2030 GOSUB 5000
+
+2040 REM A := T
+2050 I = 1
+2060 IF I > TOT THEN GOTO 2090
+2070 LET A(I) = T(I)
+2080 I = I + 1
+2085 GOTO 2060
+
+2090 K = 1
+2100 SGN = 0
+
+2110 REM T = T / Q2
+2120 D = Q2
+2130 GOSUB 5000
+2140 IF NZ <> 0 THEN GOTO 2170
+2150 RETURN
+
+2170 REM W = T / (2*K+1)
+2180 D = K + K + 1
+2190 GOSUB 6000
+2200 IF NZ <> 0 THEN GOTO 2230
+2210 RETURN
+
+2230 IF SGN = 1 THEN GOTO 2270
+2240 GOSUB 7000
+2250 GOTO 2290
+
+2270 GOSUB 8000
+
+2290 IF SGN = 1 THEN GOTO 2320
+2300 SGN = 1
+2310 GOTO 2330
+2320 SGN = 0
+2330 K = K + 1
+2340 GOTO 2110
+
+2999 REM ============================================
+3000 REM B = ATN(1/Q), uses Q and Q2
+3010 LET T(1) = 1
+3020 D = Q
+3030 GOSUB 5000
+
+3040 REM B := T
+3050 I = 1
+3060 IF I > TOT THEN GOTO 3090
+3070 LET B(I) = T(I)
+3080 I = I + 1
+3085 GOTO 3060
+
+3090 K = 1
+3100 SGN = 0
+
+3110 D = Q2
+3120 GOSUB 5000
+3130 IF NZ <> 0 THEN GOTO 3160
+3140 RETURN
+
+3160 D = K + K + 1
+3170 GOSUB 6000
+3180 IF NZ <> 0 THEN GOTO 3210
+3190 RETURN
+
+3210 IF SGN = 1 THEN GOTO 3250
+3220 GOSUB 9000
+3230 GOTO 3270
+
+3250 GOSUB 10000
+
+3270 IF SGN = 1 THEN GOTO 3300
+3280 SGN = 1
+3290 GOTO 3310
+3300 SGN = 0
+3310 K = K + 1
+3320 GOTO 3110
+
+3999 REM ============================================
+4000 REM P = 8*A + 4*B
+4010 I = 1
+4020 IF I > TOT THEN GOTO 4060
+4030 LET P(I) = 0
+4040 I = I + 1
+4050 GOTO 4020
+
+4060 CARRY = 0
+4070 I = TOT
+4080 IF I >= 1 THEN GOTO 4110
+4090 RETURN
+
+4110 U = A(I) * 8 + B(I) * 4 + CARRY
+4120 CARRY = U / 100
+4130 LET P(I) = U - CARRY * 100
+4140 I = I - 1
+4150 GOTO 4080
+
+4999 REM ============================================
+5000 REM T = T / D   (in-place via W)
+5010 CARRY = 0
+5020 NZ = 0
+5030 I = 1
+5040 IF I > TOT THEN GOTO 5120
+5050 U = CARRY * BASE + T(I)
+5060 LET W(I) = U / D
+5070 CARRY = U - W(I) * D
+5080 IF W(I) = 0 THEN GOTO 5100
+5090 NZ = 1
+5100 I = I + 1
+5110 GOTO 5040
+
+5120 I = 1
+5130 IF I > TOT THEN RETURN
+5140 LET T(I) = W(I)
+5150 I = I + 1
+5160 GOTO 5130
+
+5999 REM ============================================
+6000 REM W = T / D   (T is preserved)
+6010 CARRY = 0
+6020 NZ = 0
+6030 I = 1
+6040 IF I > TOT THEN RETURN
+6050 U = CARRY * BASE + T(I)
+6060 LET W(I) = U / D
+6070 CARRY = U - W(I) * D
+6080 IF W(I) = 0 THEN GOTO 6100
+6090 NZ = 1
+6100 I = I + 1
+6110 GOTO 6040
+
+6999 REM ============================================
+7000 REM A = A - W   (BOR-safe, without negative intermediate values)
+7010 BOR = 0
+7020 I = TOT
+7030 IF I >= 1 THEN GOTO 7060
+7040 RETURN
+
+7060 U = W(I) + BOR
+7070 IF A(I) < U THEN GOTO 7110
+7080 LET A(I) = A(I) - U
+7090 BOR = 0
+7100 GOTO 7140
+
+7110 LET A(I) = A(I) + 100 - U
+7120 BOR = 1
+
+7140 I = I - 1
+7150 GOTO 7030
+
+7999 REM ============================================
+8000 REM A = A + W
+8010 CARRY = 0
+8020 I = TOT
+8030 IF I >= 1 THEN GOTO 8060
+8040 RETURN
+
+8060 U = A(I) + W(I) + CARRY
+8070 IF U < 100 THEN GOTO 8110
+8080 LET A(I) = U - 100
+8090 CARRY = 1
+8100 GOTO 8130
+
+8110 LET A(I) = U
+8120 CARRY = 0
+
+8130 I = I - 1
+8140 GOTO 8030
+
+8999 REM ============================================
+9000 REM B = B - W   (BOR-safe, without negative intermediate values)
+9010 BOR = 0
+9020 I = TOT
+9030 IF I >= 1 THEN GOTO 9060
+9040 RETURN
+
+9060 U = W(I) + BOR
+9070 IF B(I) < U THEN GOTO 9110
+9080 LET B(I) = B(I) - U
+9090 BOR = 0
+9100 GOTO 9140
+
+9110 LET B(I) = B(I) + 100 - U
+9120 BOR = 1
+
+9140 I = I - 1
+9150 GOTO 9030
+
+9999 REM ============================================
+10000 REM B = B + W
+10010 CARRY = 0
+10020 I = TOT
+10030 IF I >= 1 THEN GOTO 10060
+10040 RETURN
+
+10060 U = B(I) + W(I) + CARRY
+10070 IF U < 100 THEN GOTO 10110
+10080 LET B(I) = U - 100
+10090 CARRY = 1
+10100 GOTO 10130
+
+10110 LET B(I) = U
+10120 CARRY = 0
+
+10130 I = I - 1
+10140 GOTO 10030
+
