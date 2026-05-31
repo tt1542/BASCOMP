@@ -82,8 +82,7 @@ BASCOMP 2.0 supports the following statements and statement forms:
 - GOTO
 - GOSUB
 - RETURN
-- FOR ... TO ... [STEP ...] / NEXT
-- END FOR
+- FOR ... TO ... [STEP ...] / NEXT, END FOR
 - WHILE ... / WEND
 - DIM
 - OPEN ... FOR INPUT AS #channel
@@ -99,14 +98,10 @@ BASCOMP 2.0 supports the following statements and statement forms:
 - POKE address, value
 - SELECT CASE, CASE, CASE ELSE, END SELECT
 - RANDOMIZE
-- RANDOMIZE TIMER
-- RANDOMIZE TIMER()
-- RANDOMIZE numeric-expression
+- RANDOMIZE TIMER / numeric-expression
 - XSET handle, index, string-expression
 - XFREE handle
-- STOP
-- END
-- . as shorthand for program termination (END / STOP)
+- END / STOP / . as shorthand
 
 ## Supported Control Structures
 
