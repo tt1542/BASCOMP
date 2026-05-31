@@ -36,22 +36,17 @@ BASCOMP 2.0 supports two source styles.
 
 ### Classic Line-Numbered BASIC
 
-basic
-10 LET A = 1
-20 PRINT A
-30 END
-
+- 10 LET A = 1
+- 20 PRINT A
+- 30 END
 
 ### QB-Style Source Mode
 
 In QB-style source mode, ordinary lines without line numbers are accepted. BASCOMP assigns internal line numbers automatically and supports symbolic labels of the form Label:.
 
-Start:
-PRINT "HELLO"
-GOTO Start
-
-
-This is useful for writing source code in a more QB-like style while still using the BASCOMP toolchain.
+- Start:
+- PRINT "HELLO"
+- GOTO Start
 
 ## Version 2.0 Highlights
 
