@@ -46,7 +46,6 @@ basic
 
 In QB-style source mode, ordinary lines without line numbers are accepted. BASCOMP assigns internal line numbers automatically and supports symbolic labels of the form Label:.
 
-basic
 Start:
 PRINT "HELLO"
 GOTO Start
@@ -229,14 +228,7 @@ BASCOMP 2.0 continues the expanded internal string-expression handling introduce
 
 ## Supported Comparisons
 
-The following comparison operators are supported in IF expressions:
-
-- =
-- <>
-- <
-- >
-- <=
-- >=
+The following comparison operators are supported in IF expressions: =, <>, <, >, <=, >=.
 
 Comparisons work for both numeric values and supported string expressions, depending on context.
 
@@ -377,8 +369,8 @@ BASCOMP 2.0 includes runtime support for:
 1. Write BASIC source as <name>.BAS.
 2. Run BASCOMP with <name> as the base name.
 3. BASCOMP generates <name>.ASM.
-4. Post-process the assembler output with ASMPACK, if desired.
-5. Assemble the .ASM file with NASM.
+4. Post-process the assembler output with ASMPACK, creating an .AS2 file.
+5. Assemble the .AS2 file with NASM or the supplied special assembler BASM, generating a COM file.
 6. Use the final DOS program.
 
 ## Notes and Limitations
