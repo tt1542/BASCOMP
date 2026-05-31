@@ -114,17 +114,17 @@ BASCOMP supports single-line and multi-line IF forms.
 
 Single-line form:
 
-IF A > 10 THEN PRINT "HIGH" ELSE PRINT "LOW"
+* IF A > 10 THEN PRINT "HIGH" ELSE PRINT "LOW"
 
 Multi-line form:
 
-IF A > 10 THEN
-PRINT "HIGH"
-ELSEIF A = 10 THEN
-PRINT "TEN"
-ELSE
-PRINT "LOW"
-END IF
+* IF A > 10 THEN
+* PRINT "HIGH"
+* ELSEIF A = 10 THEN
+* PRINT "TEN"
+* ELSE
+* PRINT "LOW"
+* END IF
 
 Boolean IF expressions support AND, OR, and NOT in supported comparison contexts.
 
@@ -132,31 +132,30 @@ Boolean IF expressions support AND, OR, and NOT in supported comparison contexts
 
 SELECT CASE supports numeric selection logic:
 
-SELECT CASE A
-CASE 1
-PRINT "ONE"
-CASE 2
-PRINT "TWO"
-CASE ELSE
-PRINT "OTHER"
-END SELECT
-
+* SELECT CASE A
+* CASE 1
+* PRINT "ONE"
+* CASE 2
+* PRINT "TWO"
+* CASE ELSE
+* PRINT "OTHER"
+* END SELECT
 
 ### FOR / NEXT / END FOR
 
 Counted loops are supported, including nested loops and optional STEP values.
 
-FOR I = 1 TO 10 STEP 2
-PRINT I
-NEXT I
+* FOR I = 1 TO 10 STEP 2
+* PRINT I
+* NEXT I
 
 END FOR is also recognized as an explicit loop terminator form.
 
 ### WHILE / WEND
 
-WHILE A < 10
-A = A + 1
-WEND
+* WHILE A < 10
+* A = A + 1
+* WEND
 
 ### Subroutines
 
@@ -176,9 +175,9 @@ String identifiers end with $ and use counted string representation in the runti
 
 DIM creates indexed numeric arrays using syntax such as A(I). Small arrays are stored internally; larger arrays can be backed by external DOS memory through the runtime array support.
 
-DIM A(10)
-LET A(1) = 5
-LET X = A(1)
+* DIM A(10)
+* LET A(1) = 5
+* LET X = A(1)
 
 ### External String Arrays
 
