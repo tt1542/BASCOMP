@@ -1,6 +1,8 @@
 # BASCOMP
 
-BASCOMP is a small, one-segment, single-pass BASIC compiler for DOS-oriented 16-bit assembly output. It translates a BASIC source file into an .ASM file. The generated assembly can then be post-processed with ASMPACK, if desired, and assembled with NASM or the supplied BASM special assembler into machine code. BASCOMP exclusively targets COM files.
+BASCOMP is a small, one-segment, single-pass BASIC compiler for DOS-oriented 16-bit assembly output. BASCOMP and its toolchain are optimized to compile BASIC input files as small COM executables for 8086/8088 systems.
+
+BASCOMP translates a BASIC source file into an .ASM file. The generated assembly can then be post-processed with ASMPACK, if desired, and assembled with NASM or the supplied BASM special assembler into machine code. BASCOMP exclusively targets COM files.
 
 BASCOMP is designed for compact BASIC programs with classic line-oriented syntax. It also supports a QB-style source mode with automatic internal line numbering and symbolic labels.
 
