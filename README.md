@@ -398,7 +398,8 @@ BASCOMP 2.0 includes runtime support for:
 - BASCOMP targets compact 16-bit DOS-style programs.
 - Numeric values use signed 16-bit integer-style arithmetic.
 - String values use counted strings with runtime-managed temporary buffers.
-- Some runtime modules are included only when the compiler emits the matching runtime capability request.
-- Identifier names are limited by the compiler's identifier reader; keep user identifiers short and compatible with classic BASIC style.
+- Some runtime modules are included only when the compiler emits the matching runtime capability request. So, essentially you get what you need in your binary, thereby reducing binary size.
+- Identifier names are limited to 8 letters by the compiler's identifier reader; keep user identifiers short and compatible with classic BASIC style.
+- No floating point arithmetic (no x87 FPU supported/needed).
 - Deeply nested expressions are supported within fixed internal context-stack limits.
 - GET and PUT operate on byte values through the runtime binary I/O support.
