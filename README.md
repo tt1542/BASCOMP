@@ -34,7 +34,7 @@ Optional helper tools and demos in this project include utilities such as ASMPAC
 
 ## Source Modes
 
-BASCOMP 2.0 supports two source styles.
+BASCOMP 2.0 supports two source code style types.
 
 ### Classic Line-Numbered BASIC
 
@@ -115,13 +115,13 @@ Single-line form:
 
 Multi-line form:
 
-* IF A > 10 THEN
-* PRINT "HIGH"
-* ELSEIF A = 10 THEN
-* PRINT "TEN"
-* ELSE
-* PRINT "LOW"
-* END IF
+- IF A > 10 THEN
+- PRINT "HIGH"
+- ELSEIF A = 10 THEN
+- PRINT "TEN"
+- ELSE
+- PRINT "LOW"
+- END IF
 
 Boolean IF expressions support AND, OR, and NOT in supported comparison contexts.
 
@@ -129,30 +129,30 @@ Boolean IF expressions support AND, OR, and NOT in supported comparison contexts
 
 SELECT CASE supports numeric selection logic:
 
-* SELECT CASE A
-* CASE 1
-* PRINT "ONE"
-* CASE 2
-* PRINT "TWO"
-* CASE ELSE
-* PRINT "OTHER"
-* END SELECT
+- SELECT CASE A
+- CASE 1
+- PRINT "ONE"
+- CASE 2
+- PRINT "TWO"
+- CASE ELSE
+- PRINT "OTHER"
+- END SELECT
 
 ### FOR / NEXT / END FOR
 
 Counted loops are supported, including nested loops and optional STEP values.
 
-* FOR I = 1 TO 10 STEP 2
-* PRINT I
-* NEXT I
+- FOR I = 1 TO 10 STEP 2
+- PRINT I
+- NEXT I
 
 END FOR is also recognized as an explicit loop terminator form.
 
 ### WHILE / WEND
 
-* WHILE A < 10
-* A = A + 1
-* WEND
+- WHILE A < 10
+- A = A + 1
+- WEND
 
 ### Subroutines
 
