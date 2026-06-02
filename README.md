@@ -15,7 +15,7 @@ BASCOMP translates a BASIC source file into an .ASM file. The generated assembly
 
 BASCOMP is designed for compact BASIC programs with classic line-oriented syntax. It also supports a QB-style source mode with automatic internal line numbering and symbolic labels.
 
-The compiler will generate NASM-compatible assembly code. The code can then be optimizes using the ASMPACK tool, reducing output code size by about 30%. Since NASM will possibly generate near jumps that are not fully 8086 compatible, the supplied BASM special assembler can be used for natively compiling for the earliest x86 compatible CPUs.
+The compiler will generate NASM-compatible assembly code. The code can then be optimizes using the ASMPACK tool, reducing output code size by about 30%. Since NASM will need to be run on a 386+ CPU, the supplied BASM special assembler can be used for natively compiling for the earliest x86 compatible CPUs.
 
 The development was assisted by a coding AI. 
 
