@@ -5,7 +5,7 @@
 50 REM Multiprecision in base 100 (2 decimal digits/cell)
 60 REM ============================================
 
-70 MAXN = 200
+70 MAXN = 10000
 80 BASE = 100
 
 90 X$ = COMMAND$
@@ -27,16 +27,16 @@
 220 END
 
 230 REM Number of base-100 cells for fractional part:
-240 REM CEIL(N/2) + 2 guard cells
+240 REM CEIL(N/2) + 3 guard cells
 250 FR = (N + 1) / 2
 260 TOT = FR + 3
 
 270 REM Work arrays
-280 DIM T(110)
-290 DIM W(110)
-300 DIM A(110)
-310 DIM B(110)
-320 DIM P(110)
+280 DIM T(5010)
+290 DIM W(5010)
+300 DIM A(5010)
+310 DIM B(5010)
+320 DIM P(5010)
 
 330 PRINT "CALCULATING PI WITH "; N; " DECIMAL PLACES ..."
 
@@ -66,28 +66,25 @@
 540 GOSUB 4000
 
 550 REM ============================================
-560 REM Build output in OUT$ and print once
+560 REM Print output directly, all digits consecutive
 570 REM ============================================
-580 OUT$ = "PI = 3."
+580 PRINT "PI = 3.";
 590 I = 2
 600 DLEFT = N
 610 IF DLEFT > 0 THEN GOTO 640
-620 PRINT OUT$
+620 PRINT
 630 END
-
 640 V = P(I)
 650 Z1 = V / 10
 660 Z2 = V - Z1 * 10
-670 OUT$ = OUT$ + CHR$(48 + Z1)
-680 IF DLEFT = 1 THEN GOTO 710
-690 OUT$ = OUT$ + CHR$(48 + Z2)
-700 GOTO 720
-710 REM only one digit still needed
-720 DLEFT = DLEFT - 2
-730 I = I + 1
-740 IF DLEFT > 0 THEN GOTO 640
-750 PRINT OUT$
-760 END
+670 PRINT CHR$(48 + Z1);
+680 IF DLEFT = 1 THEN GOTO 730
+690 PRINT CHR$(48 + Z2);
+700 DLEFT = DLEFT - 2
+710 I = I + 1
+720 IF DLEFT > 0 THEN GOTO 640
+730 PRINT
+740 END
 
 999 REM ============================================
 1000 REM Clear all arrays T,W,A,B,P
@@ -221,39 +218,79 @@
 4150 GOTO 4080
 
 4999 REM ============================================
-5000 REM T = T / D   (in-place via W)
+5000 REM T = T / D   (in-place via W, 16-bit safe)
 5010 CARRY = 0
 5020 NZ = 0
 5030 I = 1
 5040 IF I > TOT THEN GOTO 5120
-5050 U = CARRY * BASE + T(I)
-5060 LET W(I) = U / D
-5070 CARRY = U - W(I) * D
+5050 CV = T(I)
+5060 GOSUB 6500
+5070 LET W(I) = QD
 5080 IF W(I) = 0 THEN GOTO 5100
 5090 NZ = 1
 5100 I = I + 1
 5110 GOTO 5040
-
 5120 I = 1
 5130 IF I > TOT THEN RETURN
 5140 LET T(I) = W(I)
 5150 I = I + 1
 5160 GOTO 5130
 
+
 5999 REM ============================================
-6000 REM W = T / D   (T is preserved)
+6000 REM W = T / D   (T is preserved, 16-bit safe)
 6010 CARRY = 0
 6020 NZ = 0
 6030 I = 1
 6040 IF I > TOT THEN RETURN
-6050 U = CARRY * BASE + T(I)
-6060 LET W(I) = U / D
-6070 CARRY = U - W(I) * D
+6050 CV = T(I)
+6060 GOSUB 6500
+6070 LET W(I) = QD
 6080 IF W(I) = 0 THEN GOTO 6100
 6090 NZ = 1
 6100 I = I + 1
 6110 GOTO 6040
 
+6499 REM ============================================
+6500 REM Divide CARRY:CV by D in base 100, safe for 16-bit arithmetic
+6510 IF D >= BASE THEN GOTO 6560
+6520 U = CARRY * BASE + CV
+6530 QD = U / D
+6540 CARRY = U - QD * D
+6550 RETURN
+6560 DH = D / BASE
+6570 DL = D - DH * BASE
+6580 QD = CARRY / (DH + 1)
+6590 IF QD <= 99 THEN GOTO 6610
+6600 QD = 99
+6610 GOSUB 6900
+6620 IF PH < CARRY THEN GOTO 6660
+6630 IF PH > CARRY THEN GOTO 6645
+6640 IF PL <= CV THEN GOTO 6660
+6645 QD = QD - 1
+6650 GOTO 6610
+6660 IF QD >= 99 THEN GOTO 6800
+6670 QD = QD + 1
+6680 GOSUB 6900
+6690 IF PH < CARRY THEN GOTO 6660
+6700 IF PH > CARRY THEN GOTO 6750
+6710 IF PL <= CV THEN GOTO 6660
+6750 QD = QD - 1
+6760 GOSUB 6900
+6800 IF CV >= PL THEN GOTO 6840
+6810 RL = CV + BASE - PL
+6820 RH = CARRY - PH - 1
+6830 GOTO 6860
+6840 RL = CV - PL
+6850 RH = CARRY - PH
+6860 CARRY = RH * BASE + RL
+6870 RETURN
+6900 REM Product QD*D as PH:PL in base 100
+6910 TMP = QD * DL
+6920 RH = TMP / BASE
+6930 PH = QD * DH + RH
+6940 PL = TMP - RH * BASE
+6950 RETURN
 6999 REM ============================================
 7000 REM A = A - W   (BOR-safe, without negative intermediate values)
 7010 BOR = 0

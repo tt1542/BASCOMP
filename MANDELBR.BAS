@@ -1,0 +1,56 @@
+10 REM ============================================
+20 REM BASCOMP GRAPHICS DEMO: FULL 320x200 MANDELBROT
+30 REM Requires SCREEN and PSET support
+40 REM SCREEN 13 = 320x200, 256 colors
+50 REM ESC aborts after each completed row
+60 REM Fixed-point integer arithmetic, scale S=48
+70 REM ============================================
+
+80 SCREEN 13
+90 S = 48
+100 LIM = 192
+110 MAXIT = 32
+
+120 FOR PY = 0 TO 199
+130 CY = (PY - 100) * 12 / 25
+
+140 FOR PX = 0 TO 319
+150 CX = PX * 9 / 20 - 96
+160 ZX = 0
+170 ZY = 0
+180 I = 0
+
+190 IF ABS(ZX) > 95 THEN GOTO 310
+200 IF ABS(ZY) > 95 THEN GOTO 310
+210 ZX2 = ZX * ZX / S
+220 ZY2 = ZY * ZY / S
+230 IF ZX2 + ZY2 > LIM THEN GOTO 310
+240 IF I >= MAXIT THEN GOTO 310
+
+250 NZX = ZX2 - ZY2 + CX
+260 NZY = 2 * ZX * ZY / S + CY
+270 ZX = NZX
+280 ZY = NZY
+290 I = I + 1
+300 GOTO 190
+
+310 CLR = I + 1
+320 IF I < MAXIT THEN GOTO 340
+330 CLR = 0
+
+340 PSET PX, PY, CLR
+350 NEXT PX
+
+360 K$ = INKEY$
+370 IF K$ = CHR$(27) THEN GOTO 900
+380 NEXT PY
+
+390 REM Wait for any key before returning to text mode
+400 K$ = INKEY$
+410 IF K$ = "" THEN GOTO 400
+
+900 SCREEN 0
+910 COLOR 7, 0
+920 CLS
+930 PRINT "DONE."
+940 END

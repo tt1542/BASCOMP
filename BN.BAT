@@ -6,6 +6,6 @@
 @timeit asmpack bascomp.asm bascomp.as2
 @echo PACKING DONE.
 @echo NOW STARTING ASSEMBLY...
-@timeit basm bascomp
+@timeit basm bascomp /R -DBCBANNER
 @echo DONE.
 @dir bascomp.com

@@ -1,3144 +1,3612 @@
-10 REM ===============================================================
-20 REM BASCOMP.BAS
-30 REM ===============================================================
-40 REM Used global variables (compact, by role):
-50 REM A = current BASIC line number; B = FOR stack depth; C = current minimum precedence; D = character position in E$
-60 REM E/F/G/H = numeric helper values for values, channels, lengths, limits, comma positions, and precedences
-70 REM === USER INPUT AND FILE OPENING ===
-80 REM I/J/K/L = scan and boundary indices for parser, OPEN/LINE INPUT, literals, and function arguments
-90 REM M = nesting counter for IF-THEN-ELSE; N = additional sub-statements in the current BASIC line
-100 REM O = quote flag in the general line/IF scanner; P/Q = start/scan position in the general sub-statement splitter
-110 REM R = global symbol/label counter; S = quote flag in the PRINT/THEN remainder splitter
-120 REM T/U = helper values for number formatting and saved parser state; V = current target/label number
-130 REM W/X/Y/Z = saved FOR label numbers for levels 1..4
-140 REM A$ = current input line; temporary left comparison side in IF
-150 REM B$ = current statement or THEN sub-statement; TK = token code in the expression parser (0=EOF,1=MOD,2=XOR,3=AND,4=OR, otherwise ASCII)
-160 REM D$ = target variable / helper string; E$ = current expression or RHS; F$ = target string variable
-170 REM === ASM HEADER AND SYMBOL DEFINITIONS ===
-180 REM I$ = THEN label in boolean IF or remainder of a THEN block; J$ = error message or generated IF skip label
-190 REM K$ = current PRINT item; L$ = literal, file, or text content for DB/ASCIIZ output
-200 REM MC = current character in the scanner; N$ = numeric subexpression / function argument
-220 REM OPC = comparison operator code in boolean IF (1="=", 2="<", 3=">", 4="<>", 5="<=", 6=">=")
-230 REM IDTYPE = numeric type flag for READID in 17450/18100/23680 (0 = no string identifier, 1 = string identifier)
-240 REM JPAREN = saved position of the outer closing parenthesis in LEN/VAL/ASC
-250 REM Q$ = 5-digit target/symbol number; R$ = remainder of the current BASIC line, PRINT list, or THEN list
-260 REM NCTX = numeric parser context stack depth (0..4)
-270 REM NE1$/NE2$/NE3$/NE4$ = saved E$ for NUMCTX 1..4
-280 REM ND1..ND4 / NC1..NC4 = saved D/C for NUMCTX 1..4
-290 REM NK1..NK4 = saved TK for NUMCTX 1..4
-300 REM NJ1..NJ4 / NH1..NH4 / NP1..NP4 = saved J/H/JPAREN for NUMCTX 1..4
-310 REM SCTX = string context stack depth (0..8)
-320 REM STRCTX stores E$ for levels 1..4 in XC 5..8, levels 5..8 in XC 27..28/33..34
-330 REM SD1..SD8 / SC1..SC8 = saved D/C for STRCTX 1..8
-340 REM ST1..ST8 = saved TK for STRCTX 1..8
-350 REM SJ1$..SJ8$ = saved J$ for STRCTX 1..8
-360 REM L$ for STRCTX 1..4 in XC 13..16, levels 5..8 in XC 29..30/35..36
-370 REM SJN1..SJN8 / SH1..SH8 = saved J/H for STRCTX 1..8
-380 REM SP1..SP8 = saved P for STRCTX 1..8
-390 REM X$ for STRCTX 1..4 in XC 17..20, levels 5..8 in XC 31..32/37..38
-400 REM IDTMP$ = saved identifier name for 17450/18100 during STRCTX restore
-410 REM SRCCTX/SRE1$..SRE4$/SRJ1..SRJ4/SRH1..SRH4/SRO1..SRO4 = source context stack for temporary E$/J/H/O switching
-420 REM S$/T$/U$/V$ = saved FOR variable names for levels 1..4; W$ = saved outer R$ in the PRINT handler or remainder of an AND chain in boolean IF
-430 REM X$ = current string expression for SI or input filename; Y$ = current string expression for DI or output filename
-440 REM IFSKP = numeric storage for skip labels
-450 REM ECTX = EXPR-C stack depth (0..4); EC1..EC4 = saved C for recursive EXPR calls
-455 REM OFCTX/OFD1..OFD4/OFC1..OFC4/OFT1..OFT4/OFH1..OFH4 = stack for 13080/15160 STRFUNCTX; E$ in XC slots 9..12
-456 REM STRCTX levels 5..8 use XC 27..28/33..34 for E$, 29..30/35..36 for L$, 31..32/37..38 for X$
-457 REM KA$ = temporary A$ backup for K$ string expression check
-458 REM STDEP = string expression parser depth; UT4/UT5/UT6 = REQ flags for TMP4$..TMP6$
-460 REM WORD ARRAYS: A(I) is stored internally as string buffer S_A
-470 REM ARRCLR/ARRGETB/ARRSETB initialize or read/write 16-bit cells (signed) 1..127
-480 REM FC = current file channel 1..9 for OPEN/CLOSE/PRINT#/LINE
-490 REM IFELSE = ELSE flag for active IF (0 = no ELSE, 1 = ELSE present)
-500 REM IFENDP = symbol number of the end label after THEN/ELSE
-510 REM ELSR$ = ELSE part of the current single-line IF statement
-520 REM TELS1$/TELS2$ / TEND1/TEND2 / TEL1/TEL2 = saved ELSE context for TICTX
-530 REM IFNEG = negation flag for IF atom (0 = normal, 1 = NOT)
-540 REM SCMODE = 0/1 for active SELECT CASE block
-550 REM SCBODY = 0/1 whether normal statements are allowed in the current CASE body
-560 REM SCNEXT/SCEND = symbol numbers for next CASE test and end of SELECT CASE
-570 REM SCELSE = CASE ELSE already seen; SCSELV = reserved internal numeric variable for the selector
-580 REM FS/FS1..FS4 = temporary FOR STEP and per FOR level
-590 REM Runtime symbols emitted by the compiler: TMP$/TMP2$ = temporary strings; NB = text/number buffer
-600 REM UPR/UIN/UFI/UST/UCV/UAR/UBI/UPN/USO/URN/UMT/UXA/UDT/UTS/UTM/UEX/UCP/UPK = one-shot REQ flags
-610 REM ==============================================================
-620 PRINT "__________               _________                        "
-630 PRINT "\______   \_____    _____\_   ___ \  ____   _____ ______  "
-640 PRINT " |    |  _/\__  \  /  ___/    \  \/ /  _ \ /     \\____ \ "
-650 PRINT " |    |   \ / __ \_\___ \\ 2.0 \___(  <_> )  Y Y  \  |_> >"
-660 PRINT " |______  /(____  /____  >\______  /\____/|__|_|  /   __/ "
-670 PRINT "        \/      \/     \/        \/             \/|__|    "
-680 X$ = COMMAND$
-690 IF LEN(X$) <> 0 THEN GOTO 720
-700 PRINT "FILE?"
-710 INPUT X$
-720 Y$ = X$ + ".ASM"
-730 X$ = X$ + ".BAS"
-740 OPEN X$ FOR INPUT AS #1
-750 CLOSE #1
-760 OPEN Y$ FOR OUTPUT AS #2
-770 PRINT "COMPILING "; X$; " -> "; Y$
-780 REM ---------------- ASM header -------------
-790 OPEN "HEADER.ASM" FOR INPUT AS #1
-800 IF EOF(1) <> 0 THEN GOTO 840
-810 LINE INPUT #1, A$
-820 PRINT #2, A$
-830 GOTO 800
-840 CLOSE #1
-850 XC = XALLOC(38)
-860 IF XC = 0 THEN PRINT "XCTX ALLOC": END
-870 QUBMODE = -1
-871 DIM S$ AS STRING * 8
-872 DIM T$ AS STRING * 8
-873 DIM U$ AS STRING * 8
-874 DIM V$ AS STRING * 8
-875 DIM Q$ AS STRING * 5
-876 DIM IDTMP$ AS STRING * 8
-877 DIM J$ AS STRING * 15
-878 DIM SJ1$ AS STRING * 15
-879 DIM SJ2$ AS STRING * 15
-880 DIM SJ3$ AS STRING * 15
-881 DIM SJ4$ AS STRING * 15
-882 DIM SJ5$ AS STRING * 15
-883 DIM SJ6$ AS STRING * 15
-884 DIM SJ7$ AS STRING * 15
-885 DIM SJ8$ AS STRING * 15
-889 QBLN = 1
-890 OPEN X$ FOR INPUT AS #1
-900 GOTO 1100
-910 REM === MAIN LOOP: READ SOURCE LINE BY LINE ===
-920 REM ---- NEXTSYM: global label number to Q$ ----
-930 R = R + 1
-940 V = R
-950 GOTO 1070
-970 REM ---- EMITDBL: output L$ as a length-prefixed byte list ----
-980 PRINT #2, "DB "; LEN(L$)
-990 GOTO 1010
-1010 REM ---- EMITDBBYTES: output L$ as raw DB bytes ----
-1020 K = 1
-1030 IF K > LEN(L$) THEN RETURN
-1040 PRINT #2, "DB "; ASC(MID$(L$, K, 1))
-1050 K = K + 1
-1060 GOTO 1030
-1070 REM ---- FORMATQ: format V as a five-digit label number into Q$ ----
-1085 Q$ = RIGHT$("00000" + STR$(V), 5)
-1090 RETURN
-1100 REM ---------------- Main loop ---------
-1110 REM Read source line by line via LINE INPUT.
-1120 REM A real end-of-file terminates compilation.
-1130 IF EOF(1) <> 0 THEN GOTO 9680
-1140 LINE INPUT #1, A$
-1150 GOSUB 21370
-1160 A$ = TRIM$(A$)
-1170 IF LEN(A$) = 0 THEN GOTO 1130
-1180 IF QUBMODE <> -1 THEN GOTO 1200
-1190 IF VAL(A$) <> 0 THEN QUBMODE = 0 ELSE QUBMODE = 1
-1200 IF QUBMODE = 0 THEN GOTO 1240
-1210 IF VAL(A$) <> 0 THEN GOTO 9590
-1220 A = QBLN: QBLN = QBLN + 1
-1230 GOTO 1270
-1240 A = VAL(A$)
-1250 IF A <> 0 THEN GOTO 1270
-1260 GOTO 9610
-1270 REM ---------------- Compile one line -
-1280 V = A: GOSUB 1070
-1290 I = INSTR(A$, " ")
-1300 IF QUBMODE <> 0 THEN GOTO 1340
-1310 IF I = 0 THEN GOTO 1100
-1320 R$ = MID$(A$, I + 1, LEN(A$) - I)
-1330 GOTO 1400
-1340 R$ = A$
-1350 GOSUB 22770
-1360 IF E = 0 THEN GOTO 1400
-1370 PRINT #2, "L"; Q$; ":"
-1380 PRINT #2, "QB_"; L$; ":"
-1390 GOTO 1100
-1400 R$ = LTRIM$(R$)
-1410 IF LEN(R$) = 0 THEN GOTO 1100
-1420 PRINT #2, "L"; Q$; ":"
-1430 REM ---- Splitter for sub-statements in R$ ----
-1440 P = 1
-1450 Q = 1
-1460 O = 0
-1470 IF Q > LEN(R$) THEN GOTO 1690
-1480 MC = ASC(MID$(R$, Q, 1))
-1490 IF MC <> 34 THEN GOTO 1550
-1500 IF O <> 0 THEN GOTO 1540
-1510 REM === PARSER: PROCESS ONE BASIC LINE ===
-1520 O = 1
-1530 GOTO 1670
-1540 O = 0
-1550 IF MC <> 58 THEN GOTO 1670
-1560 IF O <> 0 THEN GOTO 1670
-1570 I$ = MID$(R$, P, Q - P)
-1590 I$ = LTRIM$(I$)
-1600 IF LEFT$(I$, 2) <> "IF" THEN GOTO 1640
-1610 IF INSTR(I$, "THEN") = 0 THEN GOTO 1640
-1620 Q = Q + 1
-1630 GOTO 1470
-1640 B$ = MID$(R$, P, Q - P)
+5 REM ===============================================================
+10 REM BASCOMP.BAS
+15 REM ===============================================================
+20 REM +-------------------------------------------------------------+
+25 REM | GLOBAL VARIABLE MAP                                         |
+30 REM +-------------------------------------------------------------+
+35 REM
+40 REM === MAIN INPUT, MODE AND DISPATCH =============================
+45 REM A = current BASIC source line number
+50 REM A$ = current input line
+55 REM QBLN = generated line number in unnumbered/QBasic-style mode
+60 REM QUBMODE = -1 unknown, 0 numbered source, 1 unnumbered source
+65 REM R$ = current source remainder, PRINT list, or THEN list
+70 REM B$ = current statement or THEN sub-statement
+75 REM N = more sub-statements pending in current source line
+80 REM M = nested dispatcher return depth for THEN processing
+85 REM DPMODE = nested dispatcher flag
+90 REM
+95 REM === GENERAL SCANNER AND SCRATCH REGISTERS =====================
+100 REM I/J/K/L = scan positions, bounds, comma positions, parser indices
+105 REM P/Q = statement splitter positions
+110 REM O/S = quote flags in general scanners
+115 REM E/F/G/H = numeric helpers, flags, lengths, limits, precedence
+120 REM T/U = temporary numeric helpers and saved parser state
+125 REM V = current target or label number
+130 REM R = global generated symbol/label counter
+135 REM W/X/Y/Z = general scratch and saved loop label values
+140 REM MC = current character code
+145 REM
+150 REM === COMMON STRING SCRATCH AND IDENTIFIERS ======================
+155 REM D$ = target variable or helper string
+160 REM E$ = current expression, RHS, or source fragment
+165 REM F$ = target string variable or helper string
+170 REM N$ = numeric subexpression or function argument
+175 REM I$ = THEN label or saved THEN splitter remainder
+180 REM K$ = dispatcher keyword, PRINT item, or "call "/"jmp " prefix
+185 REM L$ = literal, identifier, file text, DB/ASCIIZ payload
+190 REM Q$ = five-digit generated label text
+200 REM X$ = current string expression for SI or input filename
+205 REM Y$ = current string expression for DI or output filename
+210 REM W$ = saved outer R$ in PRINT or AND-chain remainder in boolean IF
+215 REM IDTMP$ = saved identifier name
+220 REM IDTYPE = READID type flag, 0 numeric / 1 string
+225 REM JPAREN = saved matching closing parenthesis
+230 REM XC 40 = saved L$ in numeric factor lookahead
+235 REM ER = compiler error code for shared error message dispatcher
+240 REM
+245 REM === NUMERIC EXPRESSION PARSER =================================
+250 REM TK = token code: 0 EOF, 1 MOD, 2 XOR, 3 AND, 4 OR, 5 NOT, else ASCII
+255 REM C = current minimum precedence
+260 REM OP = numeric/logical operator helper
+265 REM OPC = IF comparison code: 1 =, 2 <, 3 >, 4 <>, 5 <=, 6 >=
+270 REM OH/TH = saved H values during token lookahead
+275 REM LO = quote flag in low-level comma/parenthesis scanners
+280 REM ECTX = recursive EXPR C-stack depth
+285 REM EC1..EC4 = saved C values for ECTX
+290 REM NCTX = numeric parser context depth
+295 REM ND1..ND4 = saved D for NUMCTX
+300 REM NC1..NC4 = saved C for NUMCTX
+305 REM NK1..NK4 = saved TK for NUMCTX
+310 REM NJ1..NJ4 = saved J for NUMCTX
+315 REM NH1..NH4 = saved H for NUMCTX
+320 REM NP1..NP4 = saved JPAREN for NUMCTX
+325 REM
+330 REM === STRING LEXER, STRING PARSER AND STRING FUNCTIONS ==========
+335 REM OT = string lexer token type
+340 REM FL = string function token length
+345 REM STDEP = string expression parser depth
+350 REM OSTDEP = saved STDEP while comparing string expressions in IF
+355 REM FNLEV = nested string-function depth
+360 REM FNE1..FNE4 = saved continuation positions after string function calls
+365 REM SCTX = string parser context depth
+370 REM SD1..SD8 = saved D for STRCTX
+375 REM SC1..SC8 = saved C for STRCTX
+380 REM ST1..ST8 = saved TK for STRCTX
+385 REM SJN1..SJN8 = saved J for STRCTX
+390 REM SH1..SH8 = saved H for STRCTX
+395 REM
+400 REM === EXTENDED STRING CONTEXT STORAGE XC ========================
+405 REM XC = XALLOC(40) context handle
+410 REM XC 1..4 = saved numeric E$ contexts
+415 REM XC 5..8 and 27/28/33/34 = saved string E$ contexts
+420 REM XC 9..12 = saved OFCTX E$ contexts
+425 REM XC 13..16 and 29/30/35/36 = saved L$ contexts
+430 REM XC 17..20 and 31/32/37/38 = saved X$ contexts
+435 REM XC 21..24 = saved SRCCTX E$ contexts
+440 REM XC 25..26 = saved ELSE branch text for nested THEN/ELSE contexts
+442 REM XC 39 = active ELSE branch text
+443 REM XC 40 = saved L$ in numeric factor lookahead
+445 REM
+450 REM === SOURCE, STRFUN AND THEN/ELSE CONTEXT STACKS ===============
+455 REM SRCCTX = source context stack depth
+460 REM SRJ1..SRJ4 = saved J for SRCCTX
+465 REM SRH1..SRH4 = saved H for SRCCTX
+470 REM SRO1..SRO4 = saved O for SRCCTX
+475 REM OFCTX = string-function helper context depth
+480 REM OFD1..OFD4 = saved D for OFCTX
+485 REM OFC1..OFC4 = saved C for OFCTX
+490 REM OFT1..OFT4 = saved TK for OFCTX
+495 REM OFH1..OFH4 = saved H for OFCTX
+500 REM TICTX = nested THEN/ELSE context depth
+505 REM TSK1/TSK2 = saved IFSKP
+510 REM TEND1/TEND2 = saved IFENDP
+515 REM TEL1/TEL2 = saved IFELSE
+520 REM
+525 REM === IF / ELSE / SELECT CASE STATE =============================
+530 REM IFSKP = active skip label
+535 REM IFELSE = ELSE flag in current single-line IF
+540 REM IFENDP = label after THEN/ELSE block
+545 REM XC$(39) = active ELSE branch text
+550 REM IFNEG = NOT flag for IF atom
+555 REM IFLVL = block IF stack depth
+560 REM IFN1..IFN4 = block IF next/false labels
+565 REM IFE1..IFE4 = block IF end labels
+570 REM IFS1..IFS4 = block IF ELSE-seen flags
+575 REM CURIFN/CURIFE/CURIFS = current block IF stack entry
+580 REM SCMODE = SELECT CASE active flag
+585 REM SCBODY = normal statements allowed in current CASE body
+590 REM SCNEXT/SCEND = SELECT CASE next/end labels
+595 REM SCELSE = CASE ELSE already seen
+600 REM
+605 REM === FOR / WHILE / LOOP STATE ==================================
+610 REM B = FOR/WHILE stack depth
+615 REM S$/T$/U$/V$ = saved FOR variable names for levels 1..4
+620 REM W/X/Y/Z = saved FOR labels or WHILE start labels for levels 1..4
+625 REM FS = temporary FOR STEP
+630 REM FS1..FS4 = FOR STEP or WHILE end label per loop level
+635 REM K1..K4 = loop type per level: 0 FOR, 1 WHILE
+640 REM CURWS/CURWE = current WHILE start/end labels
+645 REM
+650 REM === FILES, PRINT, INPUT AND TARGET RESOLUTION =================
+655 REM FC = current file channel 1..9
+660 REM OGT/OGC/OGE = ON GOTO/GOSUB table/check/end labels
+665 REM OGK = ON target kind, 4 GOTO / 5 GOSUB
+670 REM K$ also stores "call " or "jmp " in common GOTO/GOSUB resolution
+675 REM
+680 REM === UPPERCASE NORMALIZATION ==================================
+685 REM UCQ = position of first source-space in numbered mode
+690 REM UCI = uppercase scanner index
+695 REM UCO = quote flag while uppercasing source text
+700 REM UCCH = current character while uppercasing
+705 REM R$ is used as uppercased source output buffer during 12010
+710 REM
+715 REM === GRAPHICS AND DRAWING SCRATCH ==============================
+720 REM L1..L8 = LINE/CIRCLE/PSET parser positions, options, temporary values
+725 REM
+730 REM === RUNTIME REQUIREMENT FLAGS =================================
+735 REM UPR = REQ PR; UIN = REQ IN; UFI = REQ FI; UST = REQ ST
+740 REM UCV = REQ CV; UAR = REQ AR; UBI = REQ BI; UPN = REQ PN
+745 REM USO = REQ SO; UGR = REQ GR; URN = REQ RN; UMT = REQ MT
+750 REM UXA = REQ XA; UDT = REQ DT; UTS = REQ TS; UTM = REQ TM
+755 REM UEX = REQ EX; UCP = REQ CP; UPK = REQ PK; UIO = REQ IO
+760 REM UDR = REQ DR; UFL = REQ FL; UBP = REQ BP; UIX = REQ IX
+765 REM UT4/UT5/UT6 = REQ flags for TMP4$/TMP5$/TMP6$
+770 REM
+775 REM === RUNTIME SYMBOLS EMITTED BY THE COMPILER ===================
+780 REM TMP$/TMP2$/TMP3$..TMP6$ = temporary runtime strings
+785 REM NB = text/number conversion buffer
+790 REM CURDIR$ = current directory buffer
+795 REM SCSELV = generated SELECT CASE selector variable
+800 REM S_A = emitted string buffer backing WORD ARRAY A(I)
+805 REM ARRCLR/ARRGETB/ARRSETB = runtime WORD ARRAY helpers
+810 REM
+815 REM === COMMAND LINE AND FILE NAME HELPERS ========================
+820 REM X$ = input filename or active string expression
+825 REM Y$ = output filename or destination string expression
+830 REM filename/path character parsing uses MC
+835 REM
+840 REM === SYSTEM, FILE, MEMORY AND DEVICE FEATURE SCRATCH ===========
+845 REM PEEK/POKE/DEF SEG/CALLINT use I/J/K/L/F/G/H/N$/D$/L$ as parser scratch
+850 REM TIMER/RANDOMIZE/EXEC/CPUID/INP/OUT use shared expression/parser scratch
+855 REM CHDIR/MKDIR/RMDIR/FILES use X$/D$/L$/N$ and REQ flags
+860 REM XALLOC/XSET/XFREE/XGET$ use XC plus numeric/string parser contexts
+865 REM
+870 REM === PARSER NOTES ==============================================
+875 REM READID returns identifier in L$ and type flag in H
+880 REM FORMATQ formats V into Q$
+885 REM NEXTSYM increments R, stores new symbol number in V, then formats Q$
+890 REM ERROR jumps set ER and dispatch through the shared message table
+895 REM
+900 REM === ACTIVE VARIABLE SET SUMMARY ===============================
+905 REM Scalars: A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
+910 REM Extra scalars: MC TK OP OPC ER FC FL OT LO OH TH JPAREN IDTYPE
+915 REM Context scalars: NCTX SCTX SRCCTX OFCTX ECTX TICTX STDEP OSTDEP FNLEV
+920 REM IF scalars: IFSKP IFELSE IFENDP IFNEG IFLVL CURIFN CURIFE CURIFS
+925 REM SELECT scalars: SCMODE SCBODY SCNEXT SCEND SCELSE
+930 REM LOOP scalars: FS FS1 FS2 FS3 FS4 K1 K2 K3 K4 CURWS CURWE
+935 REM ON scalars: OGT OGC OGE OGK
+940 REM Mode scalars: QBLN QUBMODE DPMODE
+945 REM Uppercase scalars: UCQ UCI UCO UCCH
+950 REM Graphics scalars: L1 L2 L3 L4 L5 L6 L7 L8
+955 REM String variables: A$ B$ D$ E$ F$ I$ K$ L$ N$ Q$ R$ S$ T$ U$ V$ W$ X$ Y$
+960 REM Other strings: IDTMP$
+965 REM
+970 REM === CONTEXT VARIABLE SET SUMMARY ==============================
+975 REM NUMCTX: ND1 ND2 ND3 ND4 NC1 NC2 NC3 NC4 NK1 NK2 NK3 NK4
+980 REM NUMCTX: NJ1 NJ2 NJ3 NJ4 NH1 NH2 NH3 NH4 NP1 NP2 NP3 NP4
+985 REM STRCTX: SD1 SD2 SD3 SD4 SD5 SD6 SD7 SD8
+990 REM STRCTX: SC1 SC2 SC3 SC4 SC5 SC6 SC7 SC8
+995 REM STRCTX: ST1 ST2 ST3 ST4 ST5 ST6 ST7 ST8
+1000 REM STRCTX: SJN1 SJN2 SJN3 SJN4 SJN5 SJN6 SJN7 SJN8
+1005 REM STRCTX: SH1 SH2 SH3 SH4 SH5 SH6 SH7 SH8
+1010 REM SRCCTX: SRJ1 SRJ2 SRJ3 SRJ4 SRH1 SRH2 SRH3 SRH4 SRO1 SRO2 SRO3 SRO4
+1015 REM OFCTX: OFD1 OFD2 OFD3 OFD4 OFC1 OFC2 OFC3 OFC4
+1020 REM OFCTX: OFT1 OFT2 OFT3 OFT4 OFH1 OFH2 OFH3 OFH4
+1025 REM EXPRC: EC1 EC2 EC3 EC4
+1030 REM STRFUN: FNE1 FNE2 FNE3 FNE4
+1035 REM BLOCK IF: IFN1 IFN2 IFN3 IFN4 IFE1 IFE2 IFE3 IFE4 IFS1 IFS2 IFS3 IFS4
+1040 REM THENI: TSK1 TSK2 TEND1 TEND2 TEL1 TEL2
+1045 REM
+1050 REM === REQ FLAG SET SUMMARY =====================================
+1055 REM UPR UIN UFI UST UCV UAR UBI UPN USO UGR URN UMT UXA UDT UTS UTM
+1060 REM UEX UCP UPK UIO UDR UFL UBP UIX UT4 UT5 UT6
+1065 REM
+1070 REM === EMITTED RUNTIME NAME SUMMARY ==============================
+1075 REM TMP$ TMP2$ TMP3$ TMP4$ TMP5$ TMP6$ NB CURDIR$ SCSELV S_A
+1080 REM ARRCLR ARRGETB ARRSETB
+1085 REM
+1090 REM === LIMITS ====================================================
+1095 REM FOR/WHILE stack depth <= 4
+1100 REM BLOCK IF stack depth <= 4
+1105 REM NUMCTX depth <= 4; SRCCTX depth <= 4; OFCTX depth <= 4
+1110 REM STRCTX depth <= 8; TICTX depth <= 2; STDEP/FNLEV checked by parser
+1115 REM File channels are 1..9; emitted WORD ARRAY cells are 1..127
+1120 REM ===============================================================
+1121 REM During the following part, some pre-initialized strings from HEADER.ASM 
+1122 REM are being printed.
+1125 PRINT X$
+1130 PRINT A$
+1135 PRINT B$
+1140 PRINT R$
+1145 PRINT K$
+1150 PRINT D$
+1155 X$ = TRIM$(COMMAND$)
+1160 IF LEN(X$) <> 0 THEN GOTO 1175
+1165 PRINT N$
+1170 INPUT X$
+1175 X$ = TRIM$(X$)
+1180 GOSUB 16805
+1185 IF E <> 0 THEN PRINT E$: END
+1190 OPEN X$ FOR INPUT AS #1
+1195 CLOSE #1
+1200 OPEN Y$ FOR OUTPUT AS #2: PRINT F$; X$; I$; Y$
+1205 REM ---------------- ASM header -------------
+1210 OPEN "HEADER.ASM" FOR INPUT AS #1
+1215 IF EOF(1) <> 0 THEN GOTO 1235
+1220 LINE INPUT #1, A$
+1225 PRINT #2, A$
+1230 GOTO 1215
+1235 CLOSE #1
+1240 DIM XC$(40) AS STRING * 255
+1250 QUBMODE = -1
+1255 DIM S$ AS STRING * 8
+1260 DIM T$ AS STRING * 8
+1265 DIM U$ AS STRING * 8
+1270 DIM V$ AS STRING * 8
+1275 DIM Q$ AS STRING * 5
+1280 DIM IDTMP$ AS STRING * 8
+1285 QBLN = 1
+1290 OPEN X$ FOR INPUT AS #1
+1295 GOTO 1380
+1300 REM === MAIN LOOP: READ SOURCE LINE BY LINE ===
+1305 REM ---- NEXTSYM: global label number to Q$ ----
+1310 R = R + 1
+1315 V = R
+1320 GOTO 1365
+1325 REM ---- EMITDBL: output L$ as a length-prefixed byte list ----
+1330 PRINT #2, "DB "; LEN(L$)
+1335 REM ---- EMITDBBYTES: output L$ as raw DB bytes ----
+1340 K = 1
+1345 IF K > LEN(L$) THEN RETURN
+1350 PRINT #2, "DB "; ASC(MID$(L$, K, 1))
+1355 K = K + 1
+1360 GOTO 1345
+1365 REM ---- FORMATQ: format V as a five-digit label number into Q$ ----
+1370 Q$ = RIGHT$("00000" + STR$(V), 5)
+1375 RETURN
+1380 REM ---------------- Main loop ---------
+1385 REM Read source line by line via LINE INPUT.
+1390 REM A real end-of-file terminates compilation.
+1395 IF EOF(1) <> 0 THEN GOTO 6085
+1400 LINE INPUT #1, A$
+1405 GOSUB 12010
+1410 A$ = TRIM$(A$)
+1415 IF LEN(A$) = 0 THEN GOTO 1395
+1420 IF QUBMODE <> -1 THEN GOTO 1430
+1425 IF VAL(A$) <> 0 THEN QUBMODE = 0 ELSE QUBMODE = 1
+1430 IF QUBMODE = 0 THEN GOTO 1450
+1435 IF VAL(A$) <> 0 THEN GOTO 5990
+1440 A = QBLN: QBLN = QBLN + 1
+1445 GOTO 1465
+1450 A = VAL(A$)
+1455 IF A <> 0 THEN GOTO 1465
+1460 GOTO 6000
+1465 REM ---------------- Compile one line -
+1470 V = A: GOSUB 1365
+1475 I = INSTR(A$, " ")
+1480 IF QUBMODE <> 0 THEN GOTO 1500
+1485 IF I = 0 THEN GOTO 1380
+1490 R$ = MID$(A$, I + 1, LEN(A$) - I)
+1495 GOTO 1530
+1500 R$ = A$
+1505 GOSUB 12865
+1510 IF E = 0 THEN GOTO 1530
+1515 PRINT #2, "L"; Q$; ":"
+1520 PRINT #2, "QB_"; L$; ":"
+1525 GOTO 1380
+1530 R$ = LTRIM$(R$)
+1535 IF LEN(R$) = 0 THEN GOTO 1380
+1540 PRINT #2, "L"; Q$; ":"
+1545 REM ---- Splitter for sub-statements in R$ ----
+1550 P = 1
+1555 Q = 1
+1560 O = 0
+1565 IF Q > LEN(R$) THEN GOTO 1670
+1570 MC = ASC(MID$(R$, Q, 1))
+1575 IF MC <> 34 THEN GOTO 1605
+1580 IF O <> 0 THEN GOTO 1600
+1585 REM === PARSER: PROCESS ONE BASIC LINE ===
+1590 O = 1
+1595 GOTO 1660
+1600 O = 0
+1605 IF MC <> 58 THEN GOTO 1660
+1610 IF O <> 0 THEN GOTO 1660
+1615 I$ = MID$(R$, P, Q - P)
+1620 I$ = LTRIM$(I$)
+1625 IF LEFT$(I$, 2) <> "IF" THEN GOTO 1645
+1630 IF INSTR(I$, "THEN") = 0 THEN GOTO 1645
+1635 Q = Q + 1
+1640 GOTO 1565
+1645 B$ = MID$(R$, P, Q - P)
 1650 N = 1
-1660 GOTO 1720
-1670 Q = Q + 1
-1680 GOTO 1470
-1690 IF P > LEN(R$) THEN B$ = "": GOTO 1710
-1700 B$ = MID$(R$, P, LEN(R$) - P + 1)
-1710 N = 0
-1720 REM ---- Trim B$ on both sides ----
-1730 B$ = TRIM$(B$)
-1740 IF LEN(B$) = 0 THEN GOTO 1760
-1750 GOTO 1850
-1760 REM ---- Continue after a sub-statement ----
-1761 REM GOSUB 25640: REM for debug
-1770 IF M = 0 THEN GOTO 1800
-1780 M = M - 1
-1790 RETURN
-1800 IF N = 0 THEN GOTO 1100
-1810 P = Q + 1
-1820 Q = P
-1830 O = 0
-1840 GOTO 1470
-1850 REM ---------------- Dispatcher -------------
-1860 DPMODE = 0
-1870 REM Pre-check for DIM
-1880 K$ = "DIM": GOSUB 1920
-1890 IF E = 0 THEN GOTO 2140
-1900 GOSUB 2110
-1910 GOTO 3370
-1920 REM ---- check whether B$ starts with K$ as a real statement ----
-1930 E = 0
-1940 I = LEN(K$)
-1950 IF LEN(B$) < I THEN RETURN
-1960 J = 1
-1970 IF J > I THEN GOTO 2030
-1980 MC = ASC(MID$(B$, J, 1))
-1990 IF MC <> ASC(MID$(K$, J, 1)) THEN RETURN
-2000 J = J + 1
-2010 GOTO 1970
-2030 IF LEN(B$) = I THEN E = 1: RETURN
-2040 MC = ASC(MID$(B$, I + 1, 1))
-2050 IF MC >= 65 AND MC <= 90 THEN RETURN
-2060 IF MC >= 48 AND MC <= 57 THEN RETURN
-2070 IF MC = 95 THEN RETURN
-2080 IF MC = 36 THEN RETURN
-2090 E = 1: RETURN
-2100 REM ---- wrapper setup for common dispatcher ----
-2110 IF DPMODE = 0 THEN RETURN
-2120 M = M + 1
-2130 RETURN
-2140 REM ---- common dispatcher / wrapper entry ----
-2150 IF SCMODE = 0 THEN GOTO 2195
-2160 IF SCBODY <> 0 THEN GOTO 2195
-2170 IF LEFT$(B$, 4) = "CASE" THEN GOTO 2200
-2180 IF B$ = "END SELECT" THEN GOTO 2200
-2190 GOTO 9590
-2195 IF LEFT$(B$, 1) = "?" THEN B$ = "PRINT " + MID$(B$, 2, LEN(B$) - 1): GOSUB 2110: GOTO 4420
-2196 IF LEFT$(B$, 1) = "!" THEN B$ = "INPUT " + MID$(B$, 2, LEN(B$) - 1): GOSUB 2110: GOTO 4010
-2197 IF B$ = "." THEN GOSUB 2110: GOTO 9460
-2198 IF LEFT$(B$, 1) = "'" THEN GOTO 2220
-2200 K$ = "REM": GOSUB 1920
-2210 IF E = 0 THEN GOTO 2250
-2220 IF DPMODE = 0 THEN N = 0: GOTO 1760
-2230 I$ = ""
-2240 RETURN
-2250 K$ = "LET": GOSUB 1920
-2260 IF E = 0 THEN GOTO 2290
-2270 GOSUB 2110
-2280 GOTO 3140
-2290 IF LEFT$(B$, 10) <> "LINE INPUT" THEN GOTO 2320
-2300 GOSUB 2110
-2310 GOTO 4200
-2320 K$ = "INPUT": GOSUB 1920
-2330 IF E = 0 THEN GOTO 2360
-2340 GOSUB 2110
-2350 GOTO 4010
-2360 K$ = "PRINT": GOSUB 1920
-2370 IF E = 0 THEN GOTO 2391
-2380 GOSUB 2110
-2390 GOTO 4420
-2391 K$ = "ELSEIF": GOSUB 1920
-2392 IF E <> 0 THEN GOSUB 2110: GOTO 23400
-2393 IF B$ = "ELSE" THEN GOSUB 2110: GOTO 23500
-2394 IF B$ = "END IF" THEN GOSUB 2110: GOTO 23600
-2400 K$ = "IF": GOSUB 1920
-2410 IF E = 0 THEN GOTO 2440
-2420 GOSUB 2110
-2430 GOTO 5770
-2440 K$ = "GOSUB": GOSUB 1920
-2450 IF E = 0 THEN GOTO 2480
-2460 GOSUB 2110
-2470 GOTO 7710
-2480 K$ = "GOTO": GOSUB 1920
-2490 IF E = 0 THEN GOTO 2520
-2500 GOSUB 2110
-2510 GOTO 7770
-2520 K$ = "RETURN": GOSUB 1920
-2530 IF E = 0 THEN GOTO 2560
-2540 GOSUB 2110
-2550 GOTO 7990
-2560 K$ = "FOR": GOSUB 1920
-2570 IF E = 0 THEN GOTO 2600
-2580 GOSUB 2110
-2590 GOTO 8020
-2600 K$ = "NEXT": GOSUB 1920
-2610 IF E = 0 THEN GOTO 2631
-2620 GOSUB 2110
-2630 GOTO 8420
-2631 K$ = "WHILE": GOSUB 1920
-2632 IF E = 0 THEN GOTO 2635
-2633 GOSUB 2110
-2634 GOTO 23800
-2635 K$ = "WEND": GOSUB 1920
-2636 IF E = 0 THEN GOTO 2640
-2637 GOSUB 2110
-2638 GOTO 23900
-2640 K$ = "OPEN": GOSUB 1920
-2650 IF E = 0 THEN GOTO 2680
-2660 GOSUB 2110
-2670 GOTO 8800
-2680 K$ = "CLOSE": GOSUB 1920
-2690 IF E = 0 THEN GOTO 2720
-2700 GOSUB 2110
-2710 GOTO 9240
-2720 K$ = "KILL": GOSUB 1920
-2730 IF E = 0 THEN GOTO 2760
-2740 GOSUB 2110
-2750 GOTO 9330
-2760 K$ = "LOCATE": GOSUB 1920
-2770 IF E = 0 THEN GOTO 2791
-2780 GOSUB 2110
-2790 K = 8: GOSUB 9520: PRINT #2, "call LOCATEC": GOTO 1760
-2791 K$ = "COLOR": GOSUB 1920
-2792 IF E = 0 THEN GOTO 2794
-2793 GOSUB 2110: K = 7: GOSUB 9520: PRINT #2, "call COLORC": GOTO 1760
-2794 K$ = "DEF": GOSUB 1920
-2795 IF E = 0 THEN GOTO 2798
-2796 GOSUB 2110
-2797 GOTO 26600
-2798 K$ = "RANDOMIZE": GOSUB 1920
-2799 IF E <> 0 THEN GOSUB 2110: GOTO 24720
-2800 K$ = "CLS": GOSUB 1920
-2810 IF E = 0 THEN GOTO 2840
-2820 GOSUB 2110
-2830 GOTO 9420
-2840 K$ = "GET": GOSUB 1920
-2850 IF E = 0 THEN GOTO 2880
-2860 GOSUB 2110
-2870 GOTO 22890
-2880 K$ = "PUT": GOSUB 1920
-2890 IF E = 0 THEN GOTO 2911
-2900 GOSUB 2110
-2910 GOTO 23090
-2911 K$ = "XSET": GOSUB 1920
-2912 IF E = 0 THEN GOTO 2915
-2913 GOSUB 2110
-2914 GOTO 24000
-2915 K$ = "XFREE": GOSUB 1920
-2916 IF E = 0 THEN GOTO 2919
-2917 GOSUB 2110
-2918 GOTO 24100
-2919 K$ = "POKE": GOSUB 1920: IF E <> 0 THEN GOSUB 2110: GOTO 26420
-2920 K$ = "SELECT": GOSUB 1920
-2930 IF E = 0 THEN GOTO 2960
-2940 GOSUB 2110
-2950 GOTO 5790
-2960 K$ = "CASE": GOSUB 1920
-2970 IF E = 0 THEN GOTO 2985
-2980 GOSUB 2110: GOTO 6010
-2985 K$ = "STOP": GOSUB 1920
-2986 IF E <> 0 THEN GOSUB 2110: GOTO 9460
-2990 K$ = "END": GOSUB 1920
-3000 IF E = 0 THEN GOTO 3030
-3010 IF B$ = "END SELECT" THEN GOSUB 2110: GOTO 6310
-3015 IF B$ = "END FOR" THEN GOSUB 2110: GOTO 26850
-3020 GOSUB 2110: GOTO 9460
-3030 REM === implicit LET in the common dispatcher ===
-3040 GOSUB 20620
-3050 E$ = B$: D = 1
-3060 GOSUB 9800
-3070 IDTMP$ = L$
-3080 GOSUB 20800
-3090 IF IDTMP$ = "" THEN GOTO 9590
-3100 IF INSTR(B$, "=") = 0 THEN GOTO 9590
-3110 B$ = "LET " + B$
-3120 GOSUB 2110
-3130 GOTO 3140
-3140 REM ---------------- LET -------------------
-3150 I = INSTR(B$, "=")
-3160 IF I = 0 THEN GOTO 9590
-3170 D$ = MID$(B$, 5, I - 5)
-3180 E$ = MID$(B$, I + 1, LEN(B$) - I)
-3190 REM ---- trim D$ on both sides ----
-3200 D$ = TRIM$(D$)
-3210 IF LEN(D$) = 0 THEN GOTO 9590
-3220 REM ---- trim E$ on the left ----
-3230 E$ = LTRIM$(E$)
-3240 IF LEN(E$) = 0 THEN GOTO 9590
-3250 IF RIGHT$(D$, 1) = "$" THEN GOTO 3280
-3260 GOSUB 3600
-3270 GOTO 1760
-3280 REM String assignments
-3290 REM --- NEW STRING PARSER DISPATCH --- emit target string address to DI and push it before RHS evaluation
-3300 F$ = LEFT$(D$, LEN(D$) - 1)
-3310 PRINT #2, "DS "; F$
-3320 PRINT #2, "mov di,OFFSET S_"; F$
-3330 GOSUB 21930
-3340 GOSUB 17370
-3350 IF H <> 0 THEN GOSUB 17530: GOTO 1760
-3355 X$ = E$: GOSUB 25850: IF E <> 0 THEN GOTO 3360
-3356 GOSUB 13080
-3357 GOSUB 21960
-3358 GOSUB 21760
-3359 GOTO 1760
-3360 GOSUB 16590: GOSUB 21960: GOSUB 21760: GOTO 1760
-3370 REM ---------------- DIM --------------------
-3380 D$ = MID$(B$, 4, LEN(B$) - 3)
-3390 D$ = LTRIM$(D$)
-3400 IF LEN(D$) = 0 THEN GOTO 9590
-3405 GOSUB 25182
-3406 IF E <> 0 THEN GOTO 25000
-3410 I = INSTR(D$, "(")
-3420 IF I = 0 THEN GOTO 9590
-3430 IF RIGHT$(D$, 1) <> ")" THEN GOTO 9590
-3440 F$ = LEFT$(D$, I - 1)
-3450 F$ = RTRIM$(F$)
-3460 IF LEN(F$) = 0 THEN GOTO 9590
-3470 N$ = MID$(D$, I + 1, LEN(D$) - I - 1)
-3475 IF RIGHT$(F$, 1) = "$" THEN GOTO 25000
-3480 REM COMPILE SIZE AS A NUMERIC EXPRESSION
-3490 E$ = N$
-3500 D = 1
-3510 C = 1
-3520 GOSUB 10020
-3530 GOSUB 10860
-3540 GOSUB 21640
-3550 PRINT #2, "DS "; F$
-3560 PRINT #2, "mov di,OFFSET S_"; F$
-3570 GOSUB 22140
-3580 PRINT #2, "call ARRCLR"
-3590 GOTO 1760
-3600 REM ---- NUM LHS DISPATCH: SCALAR OR BYTE ARRAY ----
-3610 I = INSTR(D$, "(")
-3620 IF I = 0 THEN GOTO 3650
-3630 IF RIGHT$(D$, 1) <> ")" THEN GOTO 9590
-3640 GOTO 3780
-3650 REM ---- OLD NUMERIC SCALAR PATH ----
-3660 REM load target address to DI immediately and save it on the runtime stack
-3670 PRINT #2, "DN "; D$
-3680 PRINT #2, "mov di,OFFSET N_"; D$
-3690 GOSUB 21930
-3700 D = 1
-3710 C = 1
-3720 GOSUB 10020
-3730 GOSUB 10860
-3740 GOSUB 21640
-3750 GOSUB 21960
-3760 PRINT #2, "mov [di],ax"
-3770 RETURN
-3780 REM ---- LET A(I)=EXPR FOR BYTE ARRAY ----
-3790 F$ = LEFT$(D$, I - 1)
-3800 F$ = RTRIM$(F$)
-3810 IF LEN(F$) = 0 THEN GOTO 9590
-3820 N$ = MID$(D$, I + 1, LEN(D$) - I - 1)
-3830 REM SAVE TARGET ARRAY IMMEDIATELY SO RECURSIVE RHS PATHS NO LONGER DISTURB F$
-3840 PRINT #2, "DS "; F$
-3850 PRINT #2, "mov si,OFFSET S_"; F$
-3860 PRINT #2, "push si"
-3870 REM COMPILE INDEX FIRST -> INDEX IS THEN ON THE STACK
-3880 GOSUB 14480
-3890 REM EVALUATE RIGHT SIDE -> VALUE IS THEN ON THE STACK ABOVE THE INDEX
-3900 D = 1
-3910 C = 1
-3920 GOSUB 10020
-3930 GOSUB 10860
-3940 REM STACK STATE NOW: VALUE ON TOP, INDEX BELOW, ARRAY BASE BELOW THAT
-3950 GOSUB 21640
-3960 GOSUB 21700
-3970 PRINT #2, "pop si"
-3980 GOSUB 22140
-3990 PRINT #2, "call ARRSETB"
-4000 RETURN
-4010 REM ---------------- INPUT ["prompt",] var / var$ --------
-4020 D$ = MID$(B$, 6, LEN(B$) - 5)
-4030 D$ = LTRIM$(D$)
-4040 IF LEN(D$) = 0 THEN GOTO 9590
-4050 H = 0
-4060 IF LEFT$(D$, 1) <> CHR$(34) THEN GOTO 4160
-4070 REM ---- scan optional prompt literal ----
-4080 J = 2
-4090 IF J > LEN(D$) THEN GOTO 9630
-4100 IF MID$(D$, J, 1) = CHR$(34) THEN GOTO 4120
-4110 J = J + 1: GOTO 4090
-4120 L$ = MID$(D$, 2, J - 2)
-4122 IF J >= LEN(D$) THEN GOTO 9590
-4130 D$ = MID$(D$, J + 1, LEN(D$) - J)
-4132 D$ = LTRIM$(D$)
-4134 IF LEN(D$) = 0 THEN GOTO 9590
-4136 IF LEFT$(D$, 1) <> "," THEN GOTO 9590
-4138 D$ = MID$(D$, 2, LEN(D$) - 1)
-4140 D$ = LTRIM$(D$)
-4142 IF LEN(D$) = 0 THEN GOTO 9590
-4144 H = 1
-4146 REM ---- output prompt literal ----
-4148 GOSUB 5761
-4160 REM ---- normal INPUT processing ----
-4162 IF RIGHT$(D$, 1) <> "$" THEN GOTO 4176
-4164 REM ---- INPUT string ----
-4166 F$ = LEFT$(D$, LEN(D$) - 1)
-4168 PRINT #2, "DS "; F$
-4170 PRINT #2, "mov di,OFFSET S_"; F$
-4172 GOSUB 24420
-4174 GOTO 1760
-4176 REM ---- INPUT numeric ----
-4178 PRINT #2, "mov di,OFFSET NB"
-4180 GOSUB 24420
-4186 PRINT #2, "mov si,OFFSET NB"
-4188 GOSUB 22110
-4190 PRINT #2, "call VAL"
-4192 PRINT #2, "DN "; D$
-4194 PRINT #2, "mov [N_"; D$; "],ax"
-4196 GOTO 1760
-4200 REM ------------- LINE INPUT #n, A$ ----------
-4210 I = INSTR(B$, "#")
-4220 J = INSTR(B$, ",")
-4230 IF I = 0 THEN GOTO 9590
-4240 IF J = 0 THEN GOTO 9590
-4250 FC = VAL(MID$(B$, I + 1, J - I - 1))
-4260 D$ = MID$(B$, J + 1, LEN(B$) - J)
-4280 D$ = LTRIM$(D$)
-4290 IF LEN(D$) < 2 THEN GOTO 9590
-4300 IF RIGHT$(D$, 1) <> "$" THEN GOTO 9590
-4310 IF FC < 1 THEN GOTO 9590
-4320 IF FC > 9 THEN GOTO 9590
-4330 GOSUB 22050
-4340 PRINT #2, "mov al,"; FC
-4350 PRINT #2, "call GETHIN"
-4360 F$ = LEFT$(D$, LEN(D$) - 1)
-4370 PRINT #2, "DS "; F$
-4380 PRINT #2, "mov di,OFFSET S_"; F$
-4390 GOSUB 22020
-4400 PRINT #2, "call READ_LINEH"
-4410 GOTO 1760
-4420 REM ---------------- PRINT / PRINT # --------
-4430 W$ = R$
-4440 FC = 0
-4450 IF LEFT$(B$, 6) = "PRINT#" THEN GOTO 4490
-4460 IF LEFT$(B$, 7) = "PRINT #" THEN GOTO 4490
-4470 R$ = MID$(B$, 6, LEN(B$) - 5)
-4480 GOTO 4580
-4490 I = INSTR(B$, "#")
-4500 J = INSTR(B$, ",")
-4510 IF I = 0 THEN GOTO 9590
-4520 IF J = 0 THEN GOTO 9590
-4530 FC = VAL(MID$(B$, I + 1, J - I - 1))
-4540 IF FC < 1 THEN GOTO 9590
-4550 IF FC > 9 THEN GOTO 9590
-4570 R$ = MID$(B$, J + 1, LEN(B$) - J)
-4580 REM ---- split print list in R$ by ; ----
-4590 IF LEN(R$) = 0 THEN GOTO 5640
-4600 I = 1
-4610 S = 0: H = 0
-4620 GOTO 4630
-4630 IF I > LEN(R$) THEN GOTO 4800
-4640 MC = ASC(MID$(R$, I, 1))
-4650 IF MC <> 34 THEN GOTO 4700
-4660 IF S <> 0 THEN GOTO 4690
-4670 S = 1
-4680 GOTO 4780
-4690 S = 0
-4700 IF S <> 0 THEN GOTO 4780
-4701 IF MC <> 40 THEN GOTO 4704
-4702 H = H + 1: GOTO 4780
-4704 IF MC <> 41 THEN GOTO 4707
-4705 IF H > 0 THEN H = H - 1
-4706 GOTO 4780
-4707 IF H <> 0 THEN GOTO 4780
-4708 IF MC = 59 THEN GOTO 4710
-4709 IF MC <> 44 THEN GOTO 4780
-4710 IF S <> 0 THEN GOTO 4780
-4720 K$ = MID$(R$, 1, I - 1)
-4730 IF I <> LEN(R$) THEN GOTO 4760
-4740 R$ = ""
-4750 GOTO 4820
-4760 R$ = MID$(R$, I + 1, LEN(R$) - I)
-4770 GOTO 4820
-4780 I = I + 1
-4790 GOTO 4630
-4800 K$ = R$
-4810 R$ = ""
-4820 REM ---- trim K$ on both sidesmen ----
-4830 K$ = TRIM$(K$)
-4840 IF LEN(K$) = 0 THEN GOTO 5540
-4850 REM ---- determine item type ----
-4860 IF LEFT$(K$, 1) <> CHR$(34) THEN GOTO 4900
-4870 E$ = K$: GOSUB 17370
-4880 IF H <> 0 THEN GOTO 5010
-4890 GOTO 5340
-4900 X$ = K$: GOSUB 25850
-4910 IF E <> 0 THEN GOTO 5340
-4920 IF LEFT$(K$, 5) = "CHR$(" THEN GOTO 5120
-4930 IF LEFT$(K$, 4) = "LEN(" THEN GOTO 5230
-4940 IF LEFT$(K$, 6) = "LEFT$(" THEN GOTO 5340
-4950 IF LEFT$(K$, 5) = "MID$(" THEN GOTO 5340
-4960 IF LEFT$(K$, 7) = "RIGHT$(" THEN GOTO 5340
-4970 IF LEFT$(K$, 7) = "LTRIM$(" THEN GOTO 5340
-4972 IF LEFT$(K$, 6) = "TRIM$(" THEN GOTO 5340
-4974 IF LEFT$(K$, 7) = "RTRIM$(" THEN GOTO 5340
-4976 IF LEFT$(K$, 5) = "STR$(" THEN GOTO 5340
-4978 IF LEFT$(K$, 7) = "UCASE$(" THEN GOTO 5340
-4980 IF LEFT$(K$, 6) = "XGET$(" THEN GOTO 5340
-4982 IF K$ = "DATE$" THEN GOTO 5340
-4984 IF K$ = "TIME$" THEN GOTO 5340
-4986 IF K$ = "INKEY$" THEN GOTO 5340
-4988 IF K$ = "INPUT$" THEN GOTO 5340
-4990 IF LEN(K$) < 2 THEN GOTO 5490
-5000 IF RIGHT$(K$, 1) <> "$" THEN GOTO 5490
-5005 GOTO 5410
-5010 REM ---- pure string literal as PRINT item ----
-5020 GOSUB 5761
-5110 GOTO 5600
-5120 REM ---- PRINT SPECIAL CASE CHR$(numexpr) ----
-5130 E$ = MID$(K$, 6, LEN(K$) - 6)
-5140 D = 1
-5150 C = 1
-5160 GOSUB 10020
-5170 GOSUB 10860
-5180 GOSUB 21640
-5190 GOSUB 5710
-5200 IF UPN = 0 THEN PRINT #2, "REQ PN": LET UPN = 1
-5210 PRINT #2, "call WRITE_CHH"
-5220 GOTO 5600
-5230 REM ---- PRINT SPECIAL CASE LEN(X$) FOR SIMPLE STRING VARIABLE ----
-5240 D$ = MID$(K$, 5, LEN(K$) - 5)
-5250 D$ = TRIM$(D$)
-5260 E$ = D$: D = 1
-5270 GOSUB 9800
-5280 IF L$ = "" THEN GOTO 5490
-5290 IF H = 0 THEN GOTO 5490
-5300 IF D <= LEN(E$) THEN GOTO 5490
-5310 D$ = L$
-5320 PRINT #2, "DS "; D$
-5322 PRINT #2, "mov si,OFFSET S_"; D$
-5324 GOSUB 22080
-5326 PRINT #2, "call LEN"
-5328 GOSUB 5710
-5330 IF UPN = 0 THEN PRINT #2, "REQ PN": LET UPN = 1
-5334 PRINT #2, "call WRITE_NUMH"
-5336 GOTO 5600
-5340 REM ---- string expression as PRINT item ----
-5350 E$ = K$
-5360 GOSUB 16590
-5370 GOSUB 5710
-5380 GOSUB 21990
-5390 PRINT #2, "call WRITE_RAW"
-5400 GOTO 5600
-5410 REM ---- PRINT SPECIAL CASE STRING VARIABLE X$ ----
-5420 D$ = LEFT$(K$, LEN(K$) - 1)
-5430 GOSUB 5710
-5440 PRINT #2, "DS "; D$
-5450 PRINT #2, "mov si,OFFSET S_"; D$
-5460 GOSUB 21990
-5470 PRINT #2, "call WRITE_RAW"
-5480 GOTO 5600
-5490 REM ---- numeric item ----
-5500 E$ = K$
-5510 D = 1
-5520 C = 1
-5530 GOSUB 10020
-5540 GOSUB 10860
-5550 GOSUB 21640
-5560 GOSUB 5710
-5570 IF UPN = 0 THEN PRINT #2, "REQ PN": LET UPN = 1
-5580 PRINT #2, "call WRITE_NUMH"
-5590 REM ---- next item or end of line ----
-5600 IF LEN(R$) = 0 THEN GOTO 5640
-5610 I = 1
-5620 S = 0: H = 0
-5630 GOTO 4630
-5640 REM ---- end of line for entire print list ----
-5650 IF RIGHT$(B$, 1) = ";" THEN GOTO 5690
-5655 IF RIGHT$(B$, 1) = "," THEN GOTO 5690
-5660 GOSUB 5710
-5670 GOSUB 21990
-5680 PRINT #2, "call WRITE_CRLFH"
-5690 R$ = W$
-5700 GOTO 1760
-5710 REM ---- emit current PRINT channel to BX ----
-5720 IF FC <> 0 THEN GOTO 5760
-5740 PRINT #2, "mov bx,1"
-5750 RETURN
-5760 GOSUB 22300: RETURN
-5761 REM ---- EMIT_LITERAL_RAW: output L$ via WRITE_RAW ----
-5762 GOSUB 920
-5763 PRINT #2, "jmp PLX_"; Q$
-5764 PRINT #2, "PLD_"; Q$; ":"
-5765 GOSUB 970
-5766 PRINT #2, "PLX_"; Q$; ":"
-5767 GOSUB 5710
-5768 PRINT #2, "mov si,OFFSET PLD_"; Q$
-5769 GOSUB 21990: PRINT #2, "call WRITE_RAW": RETURN
-5770 REM ---------------- IF <expr> <op> <expr> THEN <stmts> ----------
-5780 GOTO 17610
-5790 REM ---------------- SELECT CASE -------------
-5800 IF SCMODE <> 0 THEN GOTO 9590
-5810 IF LEFT$(B$, 11) <> "SELECT CASE" THEN GOTO 9590
-5820 IF LEN(B$) = 11 THEN GOTO 9590
-5830 IF MID$(B$, 12, 1) <> " " THEN GOTO 9590
-5840 E$ = MID$(B$, 12, LEN(B$) - 11)
-5850 E$ = LTRIM$(E$)
-5860 IF LEN(E$) = 0 THEN GOTO 9590
-5870 D = 1
-5880 C = 1
-5890 GOSUB 10020
-5900 GOSUB 10860
-5910 GOSUB 21640
-5920 PRINT #2, "DN SCSELV"
-5930 PRINT #2, "mov [N_SCSELV],ax"
-5940 GOSUB 920
-5950 SCEND = V
-5960 SCMODE = 1
-5970 SCBODY = 0
-5980 SCELSE = 0
-5990 SCNEXT = 0
-6000 GOTO 1760
-6010 REM ---------------- CASE / CASE ELSE --------
-6020 IF SCMODE = 0 THEN GOTO 9590
-6030 IF B$ = "CASE ELSE" THEN GOTO 6230
-6040 IF SCELSE <> 0 THEN GOTO 9590
-6050 IF LEFT$(B$, 5) <> "CASE " THEN GOTO 9590
-6060 N$ = MID$(B$, 6, LEN(B$) - 5)
-6070 N$ = TRIM$(N$)
-6080 IF LEN(N$) = 0 THEN GOTO 9590
-6090 GOSUB 6420
-6100 GOSUB 6490
-6110 GOSUB 920
-6120 SCNEXT = V
-6140 GOSUB 14480
-6150 GOSUB 21700
-6160 PRINT #2, "DN SCSELV"
-6170 PRINT #2, "mov ax,[N_SCSELV]"
-6180 PRINT #2, "cmp ax,bx"
-6190 V = SCNEXT: GOSUB 1070
-6200 PRINT #2, "jne SCN_"; Q$
-6210 SCBODY = 1
-6220 GOTO 1760
-6230 REM ---------------- CASE ELSE ---------------
-6240 IF SCELSE <> 0 THEN GOTO 9590
-6250 GOSUB 6420
-6260 GOSUB 6490
-6270 SCELSE = 1
-6280 SCBODY = 1
-6290 SCNEXT = 0
-6300 GOTO 1760
-6310 REM ---------------- END SELECT --------------
-6320 IF SCMODE = 0 THEN GOTO 9590
-6330 GOSUB 6490
-6340 V = SCEND: GOSUB 1070
-6350 PRINT #2, "SCE_"; Q$; ":"
-6360 SCMODE = 0
-6370 SCBODY = 0
-6380 SCELSE = 0
-6390 SCNEXT = 0
-6400 SCEND = 0
-6410 GOTO 1760
-6420 REM ---- FINISH CURRENT CASE BODY AT SELECT END ----
-6430 IF SCBODY <> 0 THEN GOTO 6450
-6440 RETURN
-6450 V = SCEND
-6460 GOSUB 1070
-6470 PRINT #2, "jmp SCE_"; Q$
-6480 RETURN
-6490 REM ---- EMIT OPEN SCNEXT LABEL ----
-6500 IF SCNEXT <> 0 THEN GOTO 6520
-6510 RETURN
-6520 V = SCNEXT
-6530 GOSUB 1070
-6540 PRINT #2, "SCN_"; Q$; ":"
-6550 RETURN
-6560 REM ---- find first top-level ELSE in R$, result in F ----
-6570 F = 0
-6580 H = 0
-6590 S = 0
-6600 T = 0
-6610 I = 1
-6620 IF I > LEN(R$) - 3 THEN RETURN
-6630 MC = ASC(MID$(R$, I, 1))
-6640 IF MC <> 34 THEN GOTO 6670
-6650 IF S = 0 THEN S = 1 ELSE S = 0
-6660 GOTO 6920
-6670 IF S <> 0 THEN GOTO 6920
-6680 IF MC <> 40 THEN GOTO 6700
-6690 H = H + 1: GOTO 6920
-6700 IF MC <> 41 THEN GOTO 6720
-6710 H = H - 1: GOTO 6920
-6720 IF H <> 0 THEN GOTO 6920
-6730 REM ---- detect nested single-line IF ----
-6740 IF MID$(R$, I, 3) <> "IF " THEN GOTO 6780
-6750 IF I = 1 THEN T = T + 1: GOTO 6920
-6760 MC = ASC(MID$(R$, I - 1, 1))
-6770 IF MC = 32 OR MC = 58 THEN T = T + 1: GOTO 6920
-6780 IF MID$(R$, I, 4) <> "ELSE" THEN GOTO 6920
-6790 IF I = 1 THEN GOTO 6820
-6800 MC = ASC(MID$(R$, I - 1, 1))
-6810 IF MC <> 32 AND MC <> 58 THEN GOTO 6920
-6820 IF T = 0 THEN GOTO 6850
-6830 T = T - 1
-6840 GOTO 6920
-6850 IF I + 4 > LEN(R$) THEN F = I: RETURN
-6860 MC = ASC(MID$(R$, I + 4, 1))
-6870 IF MC >= 65 AND MC <= 90 THEN GOTO 6920
-6880 IF MC >= 48 AND MC <= 57 THEN GOTO 6920
-6890 IF MC = 95 THEN GOTO 6920
-6900 IF MC = 36 THEN GOTO 6920
-6910 F = I: RETURN
-6920 I = I + 1
-6930 GOTO 6620
-6940 REM ---- split THEN part into sub-statements and execute ----
-6950 P = 1
-6960 Q = 1
-6970 S = 0
-6980 GOTO 6990
-6990 IF Q > LEN(R$) THEN GOTO 7360
-7000 MC = ASC(MID$(R$, Q, 1))
-7010 IF MC <> 34 THEN GOTO 7040
-7020 IF S = 0 THEN S = 1: GOTO 7340
-7030 S = 0: GOTO 7340
-7040 IF MC <> 58 THEN GOTO 7340
-7050 IF S <> 0 THEN GOTO 7340
-7060 I$ = MID$(R$, 1, Q - 1)
-7080 I$ = LTRIM$(I$)
-7090 IF LEFT$(I$, 2) <> "IF" THEN GOTO 7130
-7100 IF INSTR(I$, "THEN") = 0 THEN GOTO 7130
-7110 Q = Q + 1
-7120 GOTO 6990
-7130 B$ = MID$(R$, 1, Q - 1)
-7140 IF Q <> LEN(R$) THEN GOTO 7170
-7150 I$ = ""
-7160 GOTO 7180
-7170 I$ = MID$(R$, Q + 1, LEN(R$) - Q)
-7180 GOSUB 7670
-7190 IF LEN(B$) = 0 THEN GOTO 7300
-7200 IF LEFT$(B$, 2) <> "IF" THEN GOTO 7270
-7210 GOSUB 21260
-7220 DPMODE = 1
-7230 GOSUB 2140
-7240 DPMODE = 0
-7250 GOSUB 21320
-7260 GOTO 7300
-7270 DPMODE = 1
-7280 GOSUB 2140
-7290 DPMODE = 0
-7300 R$ = I$
-7310 IF LEN(R$) = 0 THEN GOTO 7510
-7320 P = 1
-7330 Q = 1: S = 0: GOTO 6990
-7340 Q = Q + 1
-7350 GOTO 6990
-7360 B$ = R$
-7370 I$ = ""
-7380 GOSUB 7670
-7390 IF LEN(B$) = 0 THEN GOTO 7510
-7400 IF LEFT$(B$, 2) <> "IF" THEN GOTO 7470
-7410 GOSUB 21260
-7420 DPMODE = 1
-7430 GOSUB 2140
-7440 DPMODE = 0
-7450 GOSUB 21320
-7460 GOTO 7500
-7470 DPMODE = 1
-7480 GOSUB 2140
-7490 DPMODE = 0
-7500 R$ = I$
-7510 RETURN
-7520 REM ---- finish IF branches / process ELSE ----
-7530 GOSUB 6940
-7540 IF IFELSE = 0 THEN GOTO 7640
-7550 V = IFENDP: GOSUB 1070
-7560 PRINT #2, "jmp SKP_"; Q$
-7570 V = IFSKP: GOSUB 1070
-7580 PRINT #2, "SKP_"; Q$; ":"
-7590 R$ = ELSR$
-7600 GOSUB 6940
-7610 V = IFENDP: GOSUB 1070
-7620 PRINT #2, "SKP_"; Q$; ":"
-7630 GOTO 1760
-7640 V = IFSKP: GOSUB 1070
-7650 PRINT #2, "SKP_"; Q$; ":"
-7660 GOTO 1760
-7670 REM ---- trim THEN sub-statement in B$ ----
-7680 B$ = TRIM$(B$)
-7700 RETURN
-7710 REM ---------------- GOSUB -------------------
-7720 D$ = MID$(B$, 7, LEN(B$) - 6)
-7730 D$ = TRIM$(D$)
-7740 K$ = "call "
-7750 GOSUB 7830
-7760 GOTO 1760
-7770 REM ---------------- GOTO --------------------
-7780 D$ = MID$(B$, 6, LEN(B$) - 5)
-7790 D$ = TRIM$(D$)
-7800 K$ = "jmp "
-7810 GOSUB 7830
-7820 GOTO 1760
-7830 REM ---- COMMON TARGET RESOLUTION FOR GOTO/GOSUB ----
-7840 REM Input:
-7850 REM   D$ = already trimmed target
-7860 REM   K$ = "call " OR "jmp "
-7870 REM Effect:
-7880 REM   emits K$ + "Lxxxxx" or K$ + "QB_name"
-7890 IF QUBMODE = 0 THEN GOTO 7970
-7900 E = VAL(D$)
-7910 IF E <> 0 THEN GOTO 7940
-7920 E$ = D$: D = 1: GOSUB 9800
-7930 IF L$ = "" THEN GOTO 9590
-7940 IF H <> 0 THEN GOTO 9590
-7950 IF D <= LEN(E$) THEN GOTO 9590
-7960 PRINT #2, K$; "QB_"; L$: RETURN
-7970 E = VAL(D$): V = E: GOSUB 1070
-7980 PRINT #2, K$; "L"; Q$: RETURN
-7990 REM ---------------- RETURN ------------------
-8000 PRINT #2, "ret"
-8010 GOTO 1760
-8020 REM ---------------- FOR ---------------------
-8030 B = B + 1
-8040 IF B > 4 THEN GOTO 9600
-8050 J = INSTR(B$, "=")
-8060 IF J = 0 THEN GOTO 9600
-8070 D$ = MID$(B$, 5, J - 5)
-8080 D$ = TRIM$(D$)
-8090 IF LEN(D$) = 0 THEN GOTO 9600
-8100 I = INSTR(B$, "TO")
-8110 IF I = 0 THEN GOTO 9600
-8120 FS = 1
-8130 K = INSTR(MID$(B$, I + 2, LEN(B$) - I - 1), "STEP")
-8131 IF K <> 0 THEN K = K + I + 1
-8140 E = VAL(MID$(B$, J + 1, I - J - 1))
-8150 IF K = 0 THEN GOTO 8200
-8160 FS = VAL(MID$(B$, K + 4, LEN(B$) - K - 3))
-8170 IF FS = 0 THEN GOTO 9600
-8180 F = VAL(MID$(B$, I + 3, K - I - 3))
-8190 GOTO 8210
-8200 F = VAL(MID$(B$, I + 3, LEN(B$) - I - 2))
-8210 GOSUB 920
-8220 IF B = 1 THEN S$ = D$: W = R: FS1 = FS: GOTO 8320
-8230 IF B = 2 THEN T$ = D$: X = R: FS2 = FS: GOTO 8320
-8240 IF B <> 3 THEN GOTO 8270
-8250 IF LEN(U$) <> 5 THEN GOTO 8270
-8260 GOTO 9650
-8270 IF B = 3 THEN U$ = D$: Y = R: FS3 = FS: GOTO 8320
-8280 IF B <> 4 THEN GOTO 8310
-8290 IF LEN(V$) <> 5 THEN GOTO 8310
-8300 GOTO 9650
-8310 V$ = D$: Z = R: FS4 = FS
-8320 PRINT #2, "mov ax,"; E
-8330 REM Q$ already contains the global FOR label number
-8340 PRINT #2, "DN "; D$
-8350 PRINT #2, "mov [N_"; D$; "],ax"
-8360 PRINT #2, "L_FOR_"; Q$; ":"
-8370 PRINT #2, "mov ax,[N_"; D$; "]"
-8380 PRINT #2, "cmp ax,"; F
-8390 IF FS > 0 THEN PRINT #2, "jg L_END_"; Q$: GOTO 8410
-8400 PRINT #2, "jl L_END_"; Q$
-8410 GOTO 1760
-8420 REM ---------------- NEXT --------------------
-8430 IF B = 0 THEN GOTO 9600
-8431 IF B = 1 AND S$ = "#WHILE" THEN GOTO 9600
-8432 IF B = 2 AND T$ = "#WHILE" THEN GOTO 9600
-8433 IF B = 3 AND U$ = "#WHILE" THEN GOTO 9600
-8434 IF B = 4 AND V$ = "#WHILE" THEN GOTO 9600
-8440 IF LEN(B$) = 4 THEN D$ = "": GOTO 8470
-8450 D$ = MID$(B$, 6, LEN(B$) - 5)
-8460 D$ = TRIM$(D$)
-8470 IF LEN(D$) <> 0 THEN GOTO 8520
-8480 IF B = 1 THEN D$ = S$: GOTO 8520
-8490 IF B = 2 THEN D$ = T$: GOTO 8520
-8500 IF B = 3 THEN D$ = U$: GOTO 8520
-8510 D$ = V$
-8520 IF B = 1 THEN GOTO 8560
-8530 IF B = 2 THEN GOTO 8590
-8540 IF B = 3 THEN GOTO 8620
-8550 GOTO 8650
-8560 IF D$ <> S$ THEN GOTO 9600
-8570 E = W: FS = FS1
-8580 GOTO 8680
-8590 IF D$ <> T$ THEN GOTO 9600
-8600 E = X: FS = FS2
-8610 GOTO 8680
-8620 IF D$ <> U$ THEN GOTO 9600
-8630 E = Y: FS = FS3
-8640 GOTO 8680
-8650 IF D$ <> V$ THEN GOTO 9600
-8660 E = Z: FS = FS4
-8670 PRINT #2, "DN "; D$
-8680 PRINT #2, "mov ax,[N_"; D$; "]"
-8690 PRINT #2, "add ax,"; FS
-8700 PRINT #2, "mov [N_"; D$; "],ax"
-8710 V = E: GOSUB 1070
-8720 PRINT #2, "jmp L_FOR_"; Q$
-8730 PRINT #2, "L_END_"; Q$; ":"
-8740 B = B - 1
-8750 GOTO 1760
-8800 REM ---------------- OPEN --------------------
-8810 K = INSTR(B$, "#")
-8820 IF K = 0 THEN GOTO 9590
-8830 FC = VAL(MID$(B$, K + 1, LEN(B$) - K))
-8840 IF FC < 1 THEN GOTO 9590
-8850 IF FC > 9 THEN GOTO 9590
-8860 I = INSTR(B$, CHR$(34))
-8870 IF I <> 0 THEN GOTO 9060
-8880 REM ---- OPEN X$ FOR ... ----
-8890 I = INSTR(B$, "FOR")
-8900 IF I = 0 THEN GOTO 9590
-8910 L$ = MID$(B$, 6, I - 6)
-8920 L$ = TRIM$(L$)
-8930 IF LEN(L$) = 0 THEN GOTO 9590
-8940 IF RIGHT$(L$, 1) <> "$" THEN GOTO 9590
-8950 IF LEN(L$) < 2 THEN GOTO 9590
-8960 D$ = LEFT$(L$, LEN(L$) - 1)
-8970 PRINT #2, "DS "; D$
-8980 PRINT #2, "mov si,OFFSET S_"; D$
-8990 GOSUB 22170
-9050 GOTO 9160
-9060 REM ---- OPEN "FILE" FOR ... ----
-9070 J = I + 1
-9072 IF J > LEN(B$) THEN GOTO 9630
-9074 IF MID$(B$, J, 1) = CHR$(34) THEN GOTO 9100
-9076 J = J + 1
-9078 GOTO 9072
-9100 GOSUB 920
-9110 PRINT #2, "jmp OPN_"; Q$
-9120 PRINT #2, "FNM_"; Q$; ":"
-9125 L$ = MID$(B$, I + 1, J - I - 1)
-9130 GOSUB 1010: PRINT #2, "DB 0"
-9140 PRINT #2, "OPN_"; Q$; ":"
-9150 PRINT #2, "mov dx,OFFSET FNM_"; Q$
-9160 IF INSTR(B$, "INPUT") = 0 THEN GOTO 9200
-9170 GOSUB 22050
-9180 PRINT #2, "mov al,"; FC
-9190 PRINT #2, "call OPENI": GOTO 1760
-9200 IF INSTR(B$, "OUTPUT") = 0 THEN GOTO 9590
-9210 GOSUB 22050
-9220 PRINT #2, "mov al,"; FC
-9230 PRINT #2, "call OPENO": GOTO 1760
-9240 REM ---------------- CLOSE -------------------
-9250 I = INSTR(B$, "#")
-9260 FC = VAL(MID$(B$, I + 1, LEN(B$) - I))
-9270 IF FC < 1 THEN GOTO 9590
-9280 IF FC > 9 THEN GOTO 9590
-9290 GOSUB 22050
-9300 PRINT #2, "mov al,"; FC
-9310 PRINT #2, "call CLOSEC"
-9320 GOTO 1760
-9330 REM ---------------- KILL --------------------
-9340 IF LEN(B$) < 5 THEN GOTO 9590
-9350 X$ = MID$(B$, 6, LEN(B$) - 5)
-9380 GOSUB 13080
-9390 GOSUB 22170
-9400 GOSUB 22050
-9410 PRINT #2, "call KILLF": GOTO 1760
-9420 REM ---------------- CLS --------------------
-9430 IF LEN(B$) <> 3 THEN GOTO 9590
-9440 IF USO = 0 THEN PRINT #2, "REQ SO": LET USO = 1
-9450 PRINT #2, "call CLSCR": GOTO 1760
-9460 REM ---------------- END ---------------------
-9470 IF B <> 0 THEN GOTO 9600
-9480 PRINT #2, "mov ah,4Ch"
-9490 PRINT #2, "int 21h"
-9500 GOTO 1760
-9510 REM ---- LOCATE/COLOR COMMON PREAMBLE ----
-9520 I = INSTR(B$, ","): IF I = 0 THEN GOTO 9590
-9530 N$ = MID$(B$, K, I - K): GOSUB 14480
-9540 N$ = MID$(B$, I + 1, LEN(B$) - I): GOSUB 14480
-9550 GOSUB 21700: GOSUB 21640
-9560 IF USO = 0 THEN PRINT #2, "REQ SO": LET USO = 1
-9570 RETURN
-9580 REM ------------- ERROR MESSAGES --------------
-9590 J$ = "SYNTAX ERROR": GOTO 9660
-9600 J$ = "FOR ERROR": GOTO 9660
-9610 J$ = "BAD LINE NUMBER": GOTO 9660
-9620 J$ = "MISSING )": GOTO 9660
-9630 J$ = "MISSING QUOTE": GOTO 9660
-9640 J$ = "TYPE MISMATCH": GOTO 9660
-9650 J$ = "INTERNAL ERROR": GOTO 9660
-9656 J$ = "IF ERROR": GOTO 9660
-9660 PRINT "ERROR LINE "; A; ": "; J$
-9670 GOTO 23270
-9680 REM ---------------- Footer + Runtime ----------
-9690 IF B <> 0 THEN GOTO 9600
-9695 IF IFLVL <> 0 THEN GOTO 9656
-9700 CLOSE #1
-9710 OPEN "RUNTIME.ASM" FOR INPUT AS #1
-9720 IF EOF(1) <> 0 THEN GOTO 9760
-9730 LINE INPUT #1, A$
-9740 PRINT #2, A$
-9750 GOTO 9720
-9760 CLOSE #1
-9770 CLOSE #2
-9780 PRINT "DONE."
-9790 GOTO 23270
-9800 REM ---- READID: identifier up to 8 characters ----
-9810 L$ = ""
-9820 H = 0
-9830 IF D > LEN(E$) THEN RETURN
-9840 MC = ASC(MID$(E$, D, 1))
-9850 IF MC < 65 OR MC > 90 THEN RETURN
-9860 L$ = CHR$(MC)
-9870 D = D + 1
-9880 IF D > LEN(E$) THEN GOTO 9970
-9890 MC = ASC(MID$(E$, D, 1))
-9900 IF MC = 95 THEN GOTO 9940
-9910 IF MC >= 48 AND MC <= 57 THEN GOTO 9940
-9920 IF MC >= 65 AND MC <= 90 THEN GOTO 9940
-9930 GOTO 9970
-9940 IF LEN(L$) < 8 THEN L$ = L$ + CHR$(MC)
-9950 D = D + 1
-9960 GOTO 9880
-9970 IF D > LEN(E$) THEN RETURN
-9980 IF MID$(E$, D, 1) <> "$" THEN RETURN
-9990 H = 1
-10000 D = D + 1
-10010 RETURN
-10020 REM ---------------- NEXTTOKEN ----------------
-10030 IF D > LEN(E$) THEN TK = 0: RETURN
-10040 MC = ASC(MID$(E$, D, 1))
-10050 IF MC = 32 THEN D = D + 1: GOTO 10030
-10060 IF MC < 65 OR MC > 90 THEN GOTO 10160
-10070 T = D
-10080 OH = H
-10090 GOSUB 9800
-10100 TH = H
-10110 H = OH
-10120 IF TH <> 0 THEN GOTO 10150
-10130 IF L$ = "MOD" THEN TK = 1: RETURN
-10140 IF L$ = "XOR" THEN TK = 2: RETURN
-10142 IF L$ = "AND" THEN TK = 3: RETURN
-10144 IF L$ = "OR" THEN TK = 4: RETURN
-10150 D = T
-10160 TK = ASC(MID$(E$, D, 1))
-10170 D = D + 1
-10180 RETURN
-10190 REM ---------------- PREC ---------------------
-10195 IF TK = 94 THEN H = 6: RETURN
-10200 IF TK = 1 THEN H = 5: RETURN
-10210 IF TK = 47 THEN H = 5: RETURN
-10215 IF TK = 92 THEN H = 5: RETURN
-10220 IF TK = 42 THEN H = 5: RETURN
-10230 IF TK = 43 THEN H = 4: RETURN
-10240 IF TK = 45 THEN H = 4: RETURN
-10250 IF TK = 3 THEN H = 3: RETURN
-10252 IF TK = 2 THEN H = 2: RETURN
-10254 IF TK = 4 THEN H = 1: RETURN
-10260 H = 0
-10270 RETURN
-10280 REM ---------------- FACTOR -------------------
-10290 IF TK <> 43 THEN GOTO 10310
-10300 GOSUB 10020: GOTO 10280
-10310 IF TK <> 45 THEN GOTO 10350
-10320 GOSUB 10020
-10330 GOSUB 10280
-10340 GOSUB 21640: PRINT #2, "neg ax": GOSUB 21670: RETURN
-10350 IF TK < 65 THEN GOTO 10570
-10360 IF TK > 90 THEN GOTO 10570
-10370 T = D
-10380 OH = H
-10390 OL$ = L$
-10400 D = D - 1
-10410 GOSUB 9800
-10420 TH = H
-10430 U = D
-10440 D = T
-10450 H = OH
-10460 L$ = OL$
-10470 IF TH <> 0 THEN GOTO 10570
-10480 IF U > LEN(E$) THEN GOTO 10570
-10490 IF MID$(E$, U, 1) <> "(" THEN GOTO 10570
-10500 IF L$ = "LEN" THEN GOTO 11670
-10505 IF L$ = "ABS" THEN GOTO 11661
-10506 IF L$ = "SGN" THEN GOTO 11665
-10507 IF L$ = "RND" THEN GOTO 11781
-10508 IF L$ = "INT" THEN GOTO 11902
-10509 IF L$ = "SQR" THEN GOTO 12021
-10510 IF L$ = "VAL" THEN GOTO 11790
-10511 IF L$ = "MIN" THEN GOSUB 27040: PRINT #2, "call MINS": GOTO 27170
-10512 IF L$ = "MAX" THEN GOSUB 27040: PRINT #2, "call MAXS": GOTO 27170
-10513 IF L$ = "XALLOC" THEN GOTO 24200
-10514 IF L$ = "TIMER" THEN GOTO 24470
-10515 IF L$ = "EXEC" THEN GOTO 24520
-10516 IF L$ = "CPUID" THEN GOTO 24650
-10517 IF L$ = "PEEK" THEN GOTO 26300
-10520 IF L$ = "ASC" THEN GOTO 11910
-10530 IF L$ = "EOF" THEN GOTO 12030
-10540 IF L$ = "EXIST" THEN GOTO 12150
-10550 IF L$ = "INSTR" THEN GOTO 12280
-10560 GOTO 14320
-10570 IF TK = 40 THEN GOTO 10610
-10575 IF TK = 38 THEN GOTO 26700
-10580 IF TK >= 48 THEN GOTO 10690
-10590 IF TK >= 65 THEN GOTO 10770
-10600 GOTO 9590
-10610 GOSUB 10020
-10620 I = C: C = 1
-10630 GOSUB 10860
-10640 C = I
-10650 IF TK = 41 THEN GOTO 10670
-10660 GOTO 9620
-10670 GOTO 10020
-10690 IF TK > 57 THEN GOTO 10770
-10700 N$ = ""
-10710 IF TK < 48 THEN GOTO 10740
-10720 IF TK > 57 THEN GOTO 10740
-10730 N$ = N$ + CHR$(TK): GOSUB 10020: GOTO 10710
-10740 PRINT #2, "mov ax,"; N$
-10750 GOTO 21670
-10770 D = D - 1
-10780 GOSUB 9800
-10790 IF H <> 0 THEN GOTO 9640
-10800 PRINT #2, "DN "; L$
-10810 PRINT #2, "mov ax,[N_"; L$; "]"
-10820 GOSUB 21670
-10830 GOTO 10020
-10860 REM ---------------- EXPR ---------------------
-10870 GOSUB 10280
-10880 REM jump label
-10890 GOSUB 10190
-10900 IF H < C THEN RETURN
-10905 IF TK <> 94 THEN GOTO 10920
-10906 L = H
-10907 GOSUB 10020
-10908 GOSUB 20100
-10909 C = L + 1
-10911 GOSUB 10860
-10912 GOSUB 20210
-10913 GOSUB 21700
-10914 GOSUB 21640
-10915 GOSUB 22294
-10916 PRINT #2, "call POWS"
-10917 GOSUB 21670
-10918 GOTO 10880
-10920 IF TK <> 43 THEN GOTO 11030
-10930 L = H
-10940 GOSUB 10020
-10950 GOSUB 20100
-10960 C = L + 1
-10970 GOSUB 10860
-10980 GOSUB 20210
-10990 GOSUB 21700
-11000 GOSUB 21640
-11010 PRINT #2, "add ax,bx"
-11015 GOSUB 21670
-11020 GOTO 10880
-11030 IF TK <> 45 THEN GOTO 11150
-11040 L = H
-11050 GOSUB 10020
-11060 GOSUB 20100
-11070 C = L + 1
-11080 GOSUB 10860
-11090 GOSUB 20210
-11100 GOSUB 21700
-11110 GOSUB 21640
-11120 PRINT #2, "sub ax,bx"
-11130 GOSUB 21670
-11140 GOTO 10880
-11150 IF TK <> 42 THEN GOTO 11270
-11160 L = H
-11170 GOSUB 10020
-11180 GOSUB 20100
-11190 C = L + 1
-11200 GOSUB 10860
-11210 GOSUB 20210
-11220 GOSUB 21700
-11230 GOSUB 21640
-11240 PRINT #2, "imul bx"
-11250 GOSUB 21670
-11260 GOTO 10880
-11270 IF TK = 47 THEN GOTO 11280
-11275 IF TK <> 92 THEN GOTO 11400
-11280 L = H
-11290 GOSUB 10020
-11300 GOSUB 20100
-11310 C = L + 1
-11320 GOSUB 10860
-11330 GOSUB 20210
-11340 GOSUB 21700
-11350 GOSUB 21640
-11360 PRINT #2, "cwd"
-11370 PRINT #2, "idiv bx"
-11380 GOSUB 21670
-11390 GOTO 10880
-11400 IF TK <> 1 THEN GOTO 11540
-11410 L = H
-11420 GOSUB 10020
-11430 GOSUB 20100
-11440 C = L + 1
-11450 GOSUB 10860
-11460 GOSUB 20210
-11470 GOSUB 21700
-11480 GOSUB 21640
-11490 PRINT #2, "cwd"
-11500 PRINT #2, "idiv bx"
-11510 PRINT #2, "mov ax,dx"
-11520 GOSUB 21670
-11530 GOTO 10880
-11540 IF TK = 2 THEN OP = 2: GOTO 11570
-11545 IF TK = 3 THEN OP = 3: GOTO 11570
-11550 IF TK = 4 THEN OP = 4: GOTO 11570
-11560 GOTO 9590
-11570 L = H
-11580 GOSUB 10020
-11590 GOSUB 20100
-11600 C = L + 1
-11610 GOSUB 10860
-11620 GOSUB 20210
-11625 GOSUB 21700
-11630 GOSUB 21640
-11635 IF OP = 2 THEN PRINT #2, "xor ax,bx": GOTO 11650
-11640 IF OP = 3 THEN PRINT #2, "and ax,bx": GOTO 11650
-11645 PRINT #2, "or ax,bx"
-11650 GOSUB 21670: GOTO 10880
-11660 REM end
-11661 REM ---- ABS(num) ----
-11662 I = D + 2: GOSUB 12650: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
-11663 GOSUB 14480: GOSUB 21640: PRINT #2, "cwd": PRINT #2, "xor ax,dx"
-11664 PRINT #2, "sub ax,dx": GOSUB 21670: D = JPAREN + 1: GOSUB 10020: RETURN
-11665 REM ---- SGN(num) ----
-11666 I = D + 2: GOSUB 12650: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
-11667 GOSUB 14480: GOSUB 21640: GOSUB 920: L$ = Q$
-11668 PRINT #2, "cmp ax,0": PRINT #2, "je SGN_"; L$: PRINT #2, "mov ax,1": PRINT #2, "jg SGN_"; L$
-11669 PRINT #2, "mov ax,-1": PRINT #2, "SGN_"; L$; ":": GOSUB 21670: D = JPAREN + 1: GOSUB 10020: RETURN
-11670 REM ---- LEN(str) ----
-11680 I = D + 2
-11690 GOSUB 27600
-11700 GOSUB 22080
-11710 PRINT #2, "call LEN"
-11720 GOSUB 21670
-11730 D = JPAREN + 1
-11740 GOTO 10020
-11781 REM ---- RND(num) ----
-11782 I = D + 2
-11783 GOSUB 12650
-11784 JPAREN = J
-11785 N$ = MID$(E$, I + 1, JPAREN - I - 1)
-11786 GOSUB 14480
-11787 GOSUB 21640
-11788 PRINT #2, "mov bx,ax": GOSUB 22291: PRINT #2, "call RNDS"
-11789 GOSUB 21670: D = JPAREN + 1: GOTO 10020
-11790 REM ---- VAL(str) ----
-11800 I = D + 2
-11810 GOSUB 27600
-11820 GOSUB 22110
-11830 PRINT #2, "call VAL"
-11840 GOSUB 21670
-11850 D = JPAREN + 1
-11860 GOTO 10020
-11902 REM ---- INT(num) ----
-11903 I = D + 2
-11904 GOSUB 12650
-11905 JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
-11906 GOSUB 14480
-11908 D = JPAREN + 1: GOTO 10020
-11910 REM ---- ASC(str) ----
-11920 I = D + 2
-11930 GOSUB 27600
-11940 PRINT #2, "xor ax,ax"
-11950 PRINT #2, "mov al,[si+1]"
-11960 GOSUB 21670
-11970 D = JPAREN + 1
-11980 GOTO 10020
-12021 REM ---- SQR(num) ----
-12022 I = D + 2: GOSUB 12650: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
-12023 GOSUB 14480: GOSUB 21640: GOSUB 22294: PRINT #2, "call SQRS"
-12024 GOSUB 21670: D = JPAREN + 1: GOTO 10020
-12030 REM ---- EOF(channel) ----
-12040 I = D + 2
-12050 GOSUB 12650
-12060 N$ = MID$(E$, I + 1, J - I - 1)
-12070 GOSUB 14480
-12080 GOSUB 22050
-12090 GOSUB 21640
-12100 PRINT #2, "call EOFC"
-12110 GOSUB 21670
-12120 D = J + 1
-12130 GOTO 10020
-12150 REM ---- EXIST(str) ----
-12160 I = D + 4
-12170 GOSUB 27600
-12180 GOSUB 22170
-12190 GOSUB 22050
-12200 PRINT #2, "call EXISTF"
-12210 GOSUB 21670
-12220 D = JPAREN + 1
-12230 GOTO 10020
-12280 REM ---- INSTR(str, pat) / INSTR(start, str, pat) ----
-12290 I = D + 4
-12300 GOSUB 12650
-12310 K = I + 1
-12320 L = J - 1
-12330 GOSUB 12890
-12340 G = F
-12350 IF G = 0 THEN GOTO 9590
-12360 K = G + 1
-12370 L = J - 1
-12380 GOSUB 12890
-12390 H = F
-12400 GOSUB 22080
-12410 IF H <> 0 THEN GOTO 12520
-12420 X$ = MID$(E$, I + 1, G - I - 1)
-12430 Y$ = MID$(E$, G + 1, J - G - 1)
-12440 GOSUB 13080
-12450 PRINT #2, "mov dl,1"
-12460 GOSUB 14250
-12470 PRINT #2, "call INSTRS"
-12480 GOSUB 21670
-12490 D = J + 1
-12500 GOTO 10020
-12520 N$ = MID$(E$, I + 1, G - I - 1)
-12530 X$ = MID$(E$, G + 1, H - G - 1)
-12540 Y$ = MID$(E$, H + 1, J - H - 1)
-12550 GOSUB 14480
-12560 GOSUB 21640
-12570 PRINT #2, "mov dl,al"
-12580 GOSUB 13080
-12590 GOSUB 14250
-12600 PRINT #2, "call INSTRS"
-12610 GOSUB 21670
-12620 D = J + 1
-12630 GOTO 10020
-12650 REM ---- find matching ) for I, result in J ----
-12660 OH = H
-12670 OO = O
-12680 IF I < 1 THEN I = D
-12690 IF I < 1 THEN I = 1
-12700 J = I
-12710 H = 0
-12720 LO = 0
-12730 IF J > LEN(E$) THEN GOTO 9620
-12740 MC = ASC(MID$(E$, J, 1))
-12750 IF MC <> 34 THEN GOTO 12780
-12760 IF LO = 0 THEN LO = 1: GOTO 12870
-12770 LO = 0: GOTO 12870
-12780 IF LO <> 0 THEN GOTO 12870
-12790 IF MC <> 40 THEN GOTO 12810
-12800 H = H + 1: GOTO 12870
-12810 IF MC <> 41 THEN GOTO 12870
-12820 H = H - 1
-12830 IF H <> 0 THEN GOTO 12870
-12840 H = OH
-12850 O = OO
+1655 GOTO 1685
+1660 Q = Q + 1
+1665 GOTO 1565
+1670 IF P > LEN(R$) THEN B$ = "": GOTO 1680
+1675 B$ = MID$(R$, P, LEN(R$) - P + 1)
+1680 N = 0
+1685 REM ---- Trim B$ on both sides ----
+1690 B$ = TRIM$(B$)
+1695 IF LEN(B$) = 0 THEN GOTO 1705
+1700 GOTO 1755
+1705 REM ---- Continue after a sub-statement ----
+1710 REM GOSUB 25640: REM for debug
+1715 IF M = 0 THEN GOTO 1730
+1720 M = M - 1
+1725 RETURN
+1730 IF N = 0 THEN GOTO 1380
+1735 P = Q + 1
+1740 Q = P
+1745 O = 0
+1750 GOTO 1565
+1755 REM ---------------- Dispatcher -------------
+1760 DPMODE = 0
+1765 REM Pre-check for DIM
+1770 K$ = "DIM": GOSUB 1790
+1775 IF E = 0 THEN GOTO 1895
+1780 GOSUB 1880
+1785 GOTO 2600
+1790 REM ---- check whether B$ starts with K$ as a real statement ----
+1795 E = 0
+1800 I = LEN(K$)
+1805 IF LEN(B$) < I THEN RETURN
+1810 J = 1
+1815 IF J > I THEN GOTO 1840
+1820 MC = ASC(MID$(B$, J, 1))
+1825 IF MC <> ASC(MID$(K$, J, 1)) THEN RETURN
+1830 J = J + 1
+1835 GOTO 1815
+1840 IF LEN(B$) = I THEN E = 1: RETURN
+1845 MC = ASC(MID$(B$, I + 1, 1))
+1850 IF MC >= 65 AND MC <= 90 THEN RETURN
+1855 IF MC >= 48 AND MC <= 57 THEN RETURN
+1860 IF MC = 95 THEN RETURN
+1865 IF MC = 36 THEN RETURN
+1870 E = 1: RETURN
+1875 REM ---- wrapper setup for common dispatcher ----
+1880 IF DPMODE = 0 THEN RETURN
+1885 M = M + 1
+1890 RETURN
+1895 REM ---- common dispatcher / wrapper entry ----
+1900 IF SCMODE = 0 THEN GOTO 1925
+1905 IF SCBODY <> 0 THEN GOTO 1925
+1910 IF LEFT$(B$, 4) = "CASE" THEN GOTO 1945
+1915 IF B$ = "END SELECT" THEN GOTO 1945
+1920 GOTO 5990
+1925 MC = ASC(MID$(B$, 1, 1))
+1926 IF MC = 63 THEN B$ = "PRINT " + MID$(B$, 2, LEN(B$) - 1): GOSUB 1880: GOTO 3210
+1930 IF MC = 33 THEN B$ = "INPUT " + MID$(B$, 2, LEN(B$) - 1): GOSUB 1880: GOTO 2930
+1935 IF B$ = "." THEN GOSUB 1880: GOTO 5930
+1940 IF MC = 39 THEN GOTO 1955
+1945 K$ = "REM": GOSUB 1790
+1950 IF E = 0 THEN GOTO 1970
+1955 IF DPMODE = 0 THEN N = 0: GOTO 1705
+1960 I$ = ""
+1965 RETURN
+1970 K$ = "DATAB": GOSUB 1790
+1971 IF E <> 0 THEN GOSUB 1880: GOTO 17430
+1972 K$ = "DATA": GOSUB 1790
+1973 IF E <> 0 THEN GOSUB 1880: GOTO 17470
+1974 K$ = "READ": GOSUB 1790
+1975 IF E <> 0 THEN GOSUB 1880: GOTO 17520
+1976 K$ = "RESTORE": GOSUB 1790
+1977 IF E <> 0 THEN GOSUB 1880: GOTO 17550
+1978 K$ = "CALLDATA": GOSUB 1790
+1979 IF E <> 0 THEN GOSUB 1880: GOTO 17575
+1982 K$ = "LET": GOSUB 1790
+1983 IF E <> 0 THEN GOSUB 1880: GOTO 2465
+1984 IF LEFT$(B$, 10) <> "LINE INPUT" THEN GOTO 1995
+1985 GOSUB 1880
+1990 GOTO 3110
+1995 K$ = "INPUT": GOSUB 1790
+2000 IF E <> 0 THEN GOSUB 1880: GOTO 2930
+2005 K$ = "PRINT": GOSUB 1790
+2010 IF E <> 0 THEN GOSUB 1880: GOTO 3210
+2015 K$ = "ELSEIF": GOSUB 1790
+2020 IF E <> 0 THEN GOSUB 1880: GOTO 13320
+2025 IF B$ = "ELSE" THEN GOSUB 1880: GOTO 13460
+2030 IF B$ = "END IF" THEN GOSUB 1880: GOTO 13540
+2035 K$ = "IF": GOSUB 1790
+2040 IF E <> 0 THEN GOSUB 1880: GOTO 3980
+2045 K$ = "ON": GOSUB 1790
+2050 IF E <> 0 THEN GOSUB 1880: GOTO 4905
+2055 K$ = "GOSUB": GOSUB 1790
+2060 IF E <> 0 THEN GOSUB 1880: GOTO 5095
+2065 K$ = "GOTO": GOSUB 1790
+2070 IF E <> 0 THEN GOSUB 1880: GOTO 5125
+2075 K$ = "RETURN": GOSUB 1790
+2080 IF E <> 0 THEN GOSUB 1880: GOTO 5235
+2085 K$ = "FOR": GOSUB 1790
+2090 IF E <> 0 THEN GOSUB 1880: GOTO 5250
+2095 K$ = "NEXT": GOSUB 1790
+2100 IF E <> 0 THEN GOSUB 1880: GOTO 5450
+2105 K$ = "WHILE": GOSUB 1790
+2110 IF E <> 0 THEN GOSUB 1880: GOTO 13670
+2115 K$ = "WEND": GOSUB 1790
+2120 IF E <> 0 THEN GOSUB 1880: GOTO 13790
+2125 K$ = "OPEN": GOSUB 1790
+2130 IF E <> 0 THEN GOSUB 1880: GOTO 5625
+2135 K$ = "CLOSE": GOSUB 1790
+2140 IF E <> 0 THEN GOSUB 1880: GOTO 5830
+2145 K$ = "KILL": GOSUB 1790
+2150 IF E <> 0 THEN GOSUB 1880: GOTO 5875
+2155 K$ = "CHDIR": GOSUB 1790
+2160 IF E <> 0 THEN GOSUB 1880: GOTO 15985
+2165 K$ = "MKDIR": GOSUB 1790
+2170 IF E <> 0 THEN GOSUB 1880: GOTO 15985
+2175 K$ = "RMDIR": GOSUB 1790
+2180 IF E <> 0 THEN GOSUB 1880: GOTO 15985
+2185 K$ = "FILES": GOSUB 1790
+2190 IF E <> 0 THEN GOSUB 1880: GOTO 16130
+2195 K$ = "LOCATE": GOSUB 1790
+2200 IF E <> 0 THEN GOSUB 1880: K = 8: GOSUB 5955: PRINT #2, "call LOCATEC": GOTO 1705
+2205 K$ = "COLOR": GOSUB 1790
+2210 IF E = 0 THEN GOTO 2220
+2215 GOSUB 1880: K = 7: GOSUB 5955: PRINT #2, "call COLORC": GOTO 1705
+2220 K$ = "DEF": GOSUB 1790
+2225 IF E <> 0 THEN GOSUB 1880: GOTO 15730
+2230 K$ = "RANDOMIZE": GOSUB 1790
+2235 IF E <> 0 THEN GOSUB 1880: GOTO 14595
+2240 K$ = "CLS": GOSUB 1790
+2245 IF E <> 0 THEN GOSUB 1880: GOTO 5910
+2250 K$ = "BEEP": GOSUB 1790
+2255 IF E <> 0 THEN GOSUB 1880: GOTO 17225
+2260 K$ = "GET": GOSUB 1790
+2265 IF E <> 0 THEN GOSUB 1880: GOTO 12925
+2270 K$ = "PUT": GOSUB 1790
+2275 IF E <> 0 THEN GOSUB 1880: GOTO 13025
+2280 K$ = "XSET": GOSUB 1790
+2285 IF E <> 0 THEN GOSUB 1880: GOTO 13885
+2290 K$ = "XFREE": GOSUB 1790
+2295 IF E <> 0 THEN GOSUB 1880: GOTO 14030
+2300 K$ = "LINE": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 16885
+2305 K$ = "SCREEN": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 16310
+2310 K$ = "PSET": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 16355
+2315 K$ = "POKE": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 15565
+2320 K$ = "CIRCLE": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 17250
+2325 K$ = "OUT": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 16535
+2330 K$ = "CALLINT": GOSUB 1790: IF E <> 0 THEN GOSUB 1880: GOTO 16665
+2335 K$ = "SELECT": GOSUB 1790
+2340 IF E <> 0 THEN GOSUB 1880: GOTO 3990
+2345 K$ = "CASE": GOSUB 1790
+2350 IF E = 0 THEN GOTO 2360
+2355 GOSUB 1880: GOTO 4100
+2360 K$ = "STOP": GOSUB 1790
+2365 IF E <> 0 THEN GOSUB 1880: GOTO 5930
+2370 K$ = "EXIT": GOSUB 1790
+2375 IF E = 0 THEN GOTO 2385
+2380 IF B$ = "EXIT FOR" THEN GOSUB 1880: GOTO 15895
+2385 K$ = "END": GOSUB 1790
+2390 IF E = 0 THEN GOTO 2410
+2395 IF B$ = "END SELECT" THEN GOSUB 1880: GOTO 4245
+2400 IF B$ = "END FOR" THEN GOSUB 1880: GOTO 15895
+2405 GOSUB 1880: GOTO 5930
+2410 REM === implicit LET in the common dispatcher ===
+2415 GOSUB 11285
+2420 E$ = B$: D = 1
+2425 GOSUB 6150
+2430 IDTMP$ = L$
+2435 GOSUB 11525
+2440 IF IDTMP$ = "" THEN GOTO 5990
+2445 IF INSTR(B$, "=") = 0 THEN GOTO 5990
+2450 B$ = "LET " + B$
+2455 GOSUB 1880
+2460 GOTO 2465
+2465 REM ---------------- LET -------------------
+2470 I = INSTR(B$, "=")
+2475 IF I = 0 THEN GOTO 5990
+2480 D$ = MID$(B$, 5, I - 5)
+2485 E$ = MID$(B$, I + 1, LEN(B$) - I)
+2490 REM ---- trim D$ on both sides ----
+2495 D$ = TRIM$(D$)
+2500 IF LEN(D$) = 0 THEN GOTO 5990
+2505 REM ---- trim E$ on the left ----
+2510 E$ = LTRIM$(E$)
+2515 IF LEN(E$) = 0 THEN GOTO 5990
+2516 GOSUB 17780
+2517 IF E <> 0 THEN GOTO 1705
+2520 IF RIGHT$(D$, 1) = "$" THEN GOTO 2535
+2525 GOSUB 2725
+2530 GOTO 1705
+2535 REM String assignments
+2540 REM --- NEW STRING PARSER DISPATCH --- emit target string address to DI and push it before RHS evaluation
+2545 F$ = LEFT$(D$, LEN(D$) - 1)
+2550 GOSUB 12625
+2555 GOSUB 12290
+2560 GOSUB 9645
+2565 IF H <> 0 THEN GOSUB 9725: GOTO 1705
+2570 X$ = E$: GOSUB 15255: IF E <> 0 THEN GOTO 2595
+2575 GOSUB 7780
+2580 GOSUB 12305
+2585 GOSUB 12205
+2590 GOTO 1705
+2595 GOSUB 9140: GOSUB 12305: GOSUB 12205: GOTO 1705
+2600 REM ---------------- DIM --------------------
+2605 D$ = MID$(B$, 4, LEN(B$) - 3)
+2610 D$ = LTRIM$(D$)
+2615 IF LEN(D$) = 0 THEN GOTO 5990
+2616 GOSUB 17675
+2617 IF E <> 0 THEN GOTO 1705
+2620 GOSUB 14875
+2625 IF E <> 0 THEN GOTO 14780
+2630 I = INSTR(D$, "(")
+2635 IF I = 0 THEN GOTO 5990
+2640 IF RIGHT$(D$, 1) <> ")" THEN GOTO 5990
+2645 F$ = LEFT$(D$, I - 1)
+2650 F$ = RTRIM$(F$)
+2655 IF LEN(F$) = 0 THEN GOTO 5990
+2660 N$ = MID$(D$, I + 1, LEN(D$) - I - 1)
+2665 IF RIGHT$(F$, 1) = "$" THEN GOTO 5990
+2670 REM COMPILE SIZE AS A NUMERIC EXPRESSION
+2675 E$ = N$
+2680 D = 1
+2685 C = 1
+2690 GOSUB 6260
+2695 GOSUB 6790
+2700 GOSUB 12145
+2705 GOSUB 12625
+2710 GOSUB 12395
+2715 PRINT #2, "call ARRCLR"
+2720 GOTO 1705
+2725 REM ---- NUM LHS DISPATCH: SCALAR OR BYTE ARRAY ----
+2730 I = INSTR(D$, "(")
+2735 IF I = 0 THEN GOTO 2750
+2740 IF RIGHT$(D$, 1) <> ")" THEN GOTO 5990
+2745 GOTO 2815
+2750 REM ---- OLD NUMERIC SCALAR PATH ----
+2755 REM load target address to DI immediately and save it on the runtime stack
+2760 PRINT #2, "DN "; D$
+2765 PRINT #2, "mov di,OFFSET N_"; D$
+2770 GOSUB 12290
+2775 D = 1
+2780 C = 1
+2785 GOSUB 6260
+2790 GOSUB 6790
+2795 GOSUB 12145
+2800 GOSUB 12305
+2805 PRINT #2, "mov [di],ax"
+2810 RETURN
+2815 REM ---- LET A(I)=EXPR FOR BYTE ARRAY ----
+2820 F$ = LEFT$(D$, I - 1)
+2825 F$ = RTRIM$(F$)
+2830 IF LEN(F$) = 0 THEN GOTO 5990
+2835 N$ = MID$(D$, I + 1, LEN(D$) - I - 1)
+2840 REM SAVE TARGET ARRAY IMMEDIATELY SO RECURSIVE RHS PATHS NO LONGER DISTURB F$
+2845 PRINT #2, "DS "; F$
+2850 PRINT #2, "mov si,OFFSET S_"; F$
+2855 PRINT #2, "push si"
+2860 REM COMPILE INDEX FIRST -> INDEX IS THEN ON THE STACK
+2865 GOSUB 8445
+2870 REM EVALUATE RIGHT SIDE -> VALUE IS THEN ON THE STACK ABOVE THE INDEX
+2875 D = 1
+2880 C = 1
+2885 GOSUB 6260
+2890 GOSUB 6790
+2895 REM STACK STATE NOW: VALUE ON TOP, INDEX BELOW, ARRAY BASE BELOW THAT
+2900 GOSUB 12145
+2905 GOSUB 12175
+2910 PRINT #2, "pop si"
+2915 GOSUB 12395
+2920 PRINT #2, "call ARRSETB"
+2925 RETURN
+2930 REM ---------------- INPUT ["prompt",] var / var$ --------
+2935 D$ = MID$(B$, 6, LEN(B$) - 5)
+2940 D$ = LTRIM$(D$)
+2945 IF LEN(D$) = 0 THEN GOTO 5990
+2950 IF ASC(MID$(D$, 1, 1)) <> 34 THEN GOTO 3035
+2955 REM ---- scan optional prompt literal ----
+2960 J = 2
+2965 IF J > LEN(D$) THEN GOTO 6010
+2970 IF ASC(MID$(D$, J, 1)) = 34 THEN GOTO 2980
+2975 J = J + 1: GOTO 2965
+2980 L$ = MID$(D$, 2, J - 2)
+2985 IF J >= LEN(D$) THEN GOTO 5990
+2990 D$ = MID$(D$, J + 1, LEN(D$) - J)
+2995 D$ = LTRIM$(D$)
+3000 IF LEN(D$) = 0 THEN GOTO 5990
+3005 IF ASC(MID$(D$, 1, 1)) <> 44 THEN GOTO 5990
+3010 D$ = MID$(D$, 2, LEN(D$) - 1)
+3015 D$ = LTRIM$(D$)
+3020 IF LEN(D$) = 0 THEN GOTO 5990
+3025 REM ---- output prompt literal ----
+3030 GOSUB 3935
+3035 REM ---- normal INPUT processing ----
+3040 IF RIGHT$(D$, 1) <> "$" THEN GOTO 3070
+3045 REM ---- INPUT string ----
+3050 F$ = LEFT$(D$, LEN(D$) - 1)
+3055 GOSUB 12625
+3060 GOSUB 14335
+3065 GOTO 1705
+3070 REM ---- INPUT numeric ----
+3075 PRINT #2, "mov di,OFFSET NB"
+3080 GOSUB 14335
+3085 PRINT #2, "mov si,OFFSET NB"
+3090 GOSUB 12380
+3095 PRINT #2, "call VAL"
+3100 GOSUB 13155
+3105 GOTO 1705
+3110 REM ------------- LINE INPUT #n, A$ ----------
+3115 I = INSTR(B$, "#")
+3120 J = INSTR(B$, ",")
+3125 IF I = 0 THEN GOTO 5990
+3130 IF J = 0 THEN GOTO 5990
+3135 FC = VAL(MID$(B$, I + 1, J - I - 1))
+3140 D$ = MID$(B$, J + 1, LEN(B$) - J)
+3145 D$ = LTRIM$(D$)
+3150 IF LEN(D$) < 2 THEN GOTO 5990
+3155 IF RIGHT$(D$, 1) <> "$" THEN GOTO 5990
+3160 IF FC < 1 THEN GOTO 5990
+3165 IF FC > 9 THEN GOTO 5990
+3170 GOSUB 12350
+3175 GOSUB 12610
+3180 PRINT #2, "call GETHIN"
+3185 F$ = LEFT$(D$, LEN(D$) - 1)
+3190 GOSUB 12625
+3195 GOSUB 12335
+3200 PRINT #2, "call READ_LINEH"
+3205 GOTO 1705
+3210 REM ---------------- PRINT / PRINT # --------
+3215 W$ = R$
+3220 FC = 0
+3225 IF LEFT$(B$, 6) = "PRINT#" THEN GOTO 3245
+3230 IF LEFT$(B$, 7) = "PRINT #" THEN GOTO 3245
+3235 R$ = MID$(B$, 6, LEN(B$) - 5)
+3240 GOTO 3285
+3245 I = INSTR(B$, "#")
+3250 J = INSTR(B$, ",")
+3255 IF I = 0 THEN GOTO 5990
+3260 IF J = 0 THEN GOTO 5990
+3265 FC = VAL(MID$(B$, I + 1, J - I - 1))
+3270 IF FC < 1 THEN GOTO 5990
+3275 IF FC > 9 THEN GOTO 5990
+3280 R$ = MID$(B$, J + 1, LEN(B$) - J)
+3285 REM ---- split print list in R$ by ; ----
+3290 IF LEN(R$) = 0 THEN GOTO 3870
+3295 I = 1
+3300 S = 0: H = 0
+3305 IF I > LEN(R$) THEN GOTO 3425
+3310 MC = ASC(MID$(R$, I, 1))
+3315 IF MC <> 34 THEN GOTO 3340
+3320 IF S <> 0 THEN GOTO 3335
+3325 S = 1
+3330 GOTO 3415
+3335 S = 0
+3340 IF S <> 0 THEN GOTO 3415
+3345 IF MC <> 40 THEN GOTO 3355
+3350 H = H + 1: GOTO 3415
+3355 IF MC <> 41 THEN GOTO 3370
+3360 IF H > 0 THEN H = H - 1
+3365 GOTO 3415
+3370 IF H <> 0 THEN GOTO 3415
+3375 IF MC = 59 THEN GOTO 3385
+3380 IF MC <> 44 THEN GOTO 3415
+3385 K$ = MID$(R$, 1, I - 1)
+3390 IF I <> LEN(R$) THEN GOTO 3405
+3395 R$ = ""
+3400 GOTO 3435
+3405 R$ = MID$(R$, I + 1, LEN(R$) - I)
+3410 GOTO 3435
+3415 I = I + 1
+3420 GOTO 3305
+3425 K$ = R$
+3430 R$ = ""
+3435 REM ---- trim K$ on both sidesmen ----
+3440 K$ = TRIM$(K$)
+3445 IF LEN(K$) = 0 THEN GOTO 3820
+3450 REM ---- determine item type ----
+3455 IF ASC(MID$(K$, 1, 1)) <> 34 THEN GOTO 3475
+3460 E$ = K$: GOSUB 9645
+3465 IF H <> 0 THEN GOTO 3575
+3470 GOTO 3725
+3475 X$ = K$: GOSUB 15255
+3480 IF E <> 0 THEN GOTO 3725
+3485 IF LEFT$(K$, 5) = "CHR$(" THEN GOTO 3590
+3490 IF LEFT$(K$, 4) = "LEN(" THEN GOTO 3645
+3495 IF LEFT$(K$, 6) = "LEFT$(" THEN GOTO 3725
+3500 IF LEFT$(K$, 5) = "MID$(" THEN GOTO 3725
+3505 IF LEFT$(K$, 7) = "RIGHT$(" THEN GOTO 3725
+3510 IF LEFT$(K$, 7) = "LTRIM$(" THEN GOTO 3725
+3515 IF LEFT$(K$, 6) = "TRIM$(" THEN GOTO 3725
+3520 IF LEFT$(K$, 7) = "RTRIM$(" THEN GOTO 3725
+3525 IF LEFT$(K$, 5) = "STR$(" THEN GOTO 3725
+3530 IF LEFT$(K$, 7) = "UCASE$(" THEN GOTO 3725
+3535 IF LEFT$(K$, 6) = "XGET$(" THEN GOTO 3725
+3537 I = INSTR(K$, "$("): IF I <> 0 THEN IF INSTR(K$, "(") = I + 1 THEN GOTO 3725
+3540 IF K$ = "DATE$" THEN GOTO 3725
+3545 IF K$ = "TIME$" THEN GOTO 3725
+3550 IF K$ = "INKEY$" THEN GOTO 3725
+3555 IF K$ = "INPUT$" THEN GOTO 3725
+3560 IF LEN(K$) < 2 THEN GOTO 3795
+3565 IF RIGHT$(K$, 1) <> "$" THEN GOTO 3795
+3570 GOTO 3760
+3575 REM ---- pure string literal as PRINT item ----
+3580 GOSUB 3935
+3585 GOTO 3850
+3590 REM ---- PRINT SPECIAL CASE CHR$(numexpr) ----
+3595 E$ = MID$(K$, 6, LEN(K$) - 6)
+3600 D = 1
+3605 C = 1
+3610 GOSUB 6260
+3615 GOSUB 6790
+3620 GOSUB 12145
+3625 GOSUB 3910
+3630 GOSUB 13125
+3635 PRINT #2, "call WRITE_CHH"
+3640 GOTO 3850
+3645 REM ---- PRINT SPECIAL CASE LEN(X$) FOR SIMPLE STRING VARIABLE ----
+3650 D$ = MID$(K$, 5, LEN(K$) - 5)
+3655 D$ = TRIM$(D$)
+3660 E$ = D$: D = 1
+3665 GOSUB 6150
+3670 IF L$ = "" THEN GOTO 3795
+3675 IF H = 0 THEN GOTO 3795
+3680 IF D <= LEN(E$) THEN GOTO 3795
+3685 D$ = L$
+3690 GOSUB 12645
+3695 GOSUB 12365
+3700 PRINT #2, "call LEN"
+3705 GOSUB 3910
+3710 GOSUB 13125
+3715 PRINT #2, "call WRITE_NUMH"
+3720 GOTO 3850
+3725 REM ---- string expression as PRINT item ----
+3730 E$ = K$
+3735 GOSUB 9140
+3740 GOSUB 3910
+3745 GOSUB 12320
+3750 PRINT #2, "call WRITE_RAW"
+3755 GOTO 3850
+3760 REM ---- PRINT SPECIAL CASE STRING VARIABLE X$ ----
+3765 D$ = LEFT$(K$, LEN(K$) - 1)
+3770 GOSUB 3910
+3775 GOSUB 12645
+3780 GOSUB 12320
+3785 PRINT #2, "call WRITE_RAW"
+3790 GOTO 3850
+3795 REM ---- numeric item ----
+3800 E$ = K$
+3805 D = 1
+3810 C = 1
+3815 GOSUB 6260
+3820 GOSUB 6790
+3825 GOSUB 12145
+3830 GOSUB 3910
+3835 GOSUB 13125
+3840 PRINT #2, "call WRITE_NUMH"
+3845 REM ---- next item or end of line ----
+3850 IF LEN(R$) = 0 THEN GOTO 3870
+3855 I = 1
+3860 S = 0: H = 0
+3865 GOTO 3305
+3870 REM ---- end of line for entire print list ----
+3875 MC = ASC(MID$(B$, LEN(B$), 1))
+3880 IF MC = 59 THEN GOTO 3900
+3881 IF MC = 44 THEN GOTO 3900
+3885 GOSUB 3910
+3890 GOSUB 12320
+3895 PRINT #2, "call WRITE_CRLFH"
+3900 R$ = W$
+3905 GOTO 1705
+3910 REM ---- emit current PRINT channel to BX ----
+3915 IF FC <> 0 THEN GOTO 3930
+3920 PRINT #2, "mov bx,1"
+3925 RETURN
+3930 GOTO 12550
+3935 REM ---- EMIT_LITERAL_RAW: output L$ via WRITE_RAW ----
+3940 GOSUB 1305
+3945 PRINT #2, "jmp PLX_"; Q$
+3950 PRINT #2, "PLD_"; Q$; ":"
+3955 GOSUB 1325
+3960 PRINT #2, "PLX_"; Q$; ":"
+3965 GOSUB 3910
+3970 PRINT #2, "mov si,OFFSET PLD_"; Q$
+3975 GOSUB 12320: PRINT #2, "call WRITE_RAW": RETURN
+3980 REM ---------------- IF <expr> <op> <expr> THEN <stmts> ----------
+3985 GOTO 9765
+3990 REM ---------------- SELECT CASE -------------
+3995 IF SCMODE <> 0 THEN GOTO 5990
+4000 IF LEFT$(B$, 11) <> "SELECT CASE" THEN GOTO 5990
+4005 IF LEN(B$) = 11 THEN GOTO 5990
+4010 IF MID$(B$, 12, 1) <> " " THEN GOTO 5990
+4015 E$ = MID$(B$, 12, LEN(B$) - 11)
+4020 E$ = LTRIM$(E$)
+4025 IF LEN(E$) = 0 THEN GOTO 5990
+4030 D = 1
+4035 C = 1
+4040 GOSUB 6260
+4045 GOSUB 6790
+4050 GOSUB 12145
+4055 PRINT #2, "DN SCSELV"
+4060 PRINT #2, "mov [N_SCSELV],ax"
+4065 GOSUB 1305
+4070 SCEND = V
+4075 SCMODE = 1
+4080 SCBODY = 0
+4085 SCELSE = 0
+4090 SCNEXT = 0
+4095 GOTO 1705
+4100 REM ---------------- CASE / CASE ELSE --------
+4105 IF SCMODE = 0 THEN GOTO 5990
+4110 IF B$ = "CASE ELSE" THEN GOTO 4205
+4115 IF SCELSE <> 0 THEN GOTO 5990
+4120 IF LEFT$(B$, 5) <> "CASE " THEN GOTO 5990
+4125 N$ = MID$(B$, 6, LEN(B$) - 5)
+4130 N$ = TRIM$(N$)
+4135 IF LEN(N$) = 0 THEN GOTO 5990
+4140 GOSUB 4280
+4145 GOSUB 4315
+4150 GOSUB 1305
+4155 SCNEXT = V
+4160 GOSUB 8445
+4165 GOSUB 12175
+4170 PRINT #2, "DN SCSELV"
+4175 PRINT #2, "mov ax,[N_SCSELV]"
+4180 PRINT #2, "cmp ax,bx"
+4185 V = SCNEXT: GOSUB 1365
+4190 PRINT #2, "jne SCN_"; Q$
+4195 SCBODY = 1
+4200 GOTO 1705
+4205 REM ---------------- CASE ELSE ---------------
+4210 IF SCELSE <> 0 THEN GOTO 5990
+4215 GOSUB 4280
+4220 GOSUB 4315
+4225 SCELSE = 1
+4230 SCBODY = 1
+4235 SCNEXT = 0
+4240 GOTO 1705
+4245 REM ---------------- END SELECT --------------
+4250 IF SCMODE = 0 THEN GOTO 5990
+4255 GOSUB 4315
+4260 V = SCEND: GOSUB 1365
+4265 PRINT #2, "SCE_"; Q$; ":"
+4270 SCMODE = 0
+4275 GOTO 1705
+4280 REM ---- FINISH CURRENT CASE BODY AT SELECT END ----
+4285 IF SCBODY <> 0 THEN GOTO 4295
+4290 RETURN
+4295 V = SCEND
+4300 GOSUB 1365
+4305 PRINT #2, "jmp SCE_"; Q$
+4310 RETURN
+4315 REM ---- EMIT OPEN SCNEXT LABEL ----
+4320 IF SCNEXT <> 0 THEN GOTO 4330
+4325 RETURN
+4330 V = SCNEXT
+4335 GOSUB 1365
+4340 PRINT #2, "SCN_"; Q$; ":"
+4345 RETURN
+4350 REM ---- find first top-level ELSE in R$, result in F ----
+4355 F = 0
+4360 H = 0
+4365 S = 0
+4370 T = 0
+4375 I = 1
+4380 IF I > LEN(R$) - 3 THEN RETURN
+4385 MC = ASC(MID$(R$, I, 1))
+4390 IF MC <> 34 THEN GOTO 4405
+4395 IF S = 0 THEN S = 1 ELSE S = 0
+4400 GOTO 4530
+4405 IF S <> 0 THEN GOTO 4530
+4410 IF MC <> 40 THEN GOTO 4420
+4415 H = H + 1: GOTO 4530
+4420 IF MC <> 41 THEN GOTO 4430
+4425 H = H - 1: GOTO 4530
+4430 IF H <> 0 THEN GOTO 4530
+4435 REM ---- detect nested single-line IF ----
+4440 IF MID$(R$, I, 3) <> "IF " THEN GOTO 4460
+4445 IF I = 1 THEN T = T + 1: GOTO 4530
+4450 MC = ASC(MID$(R$, I - 1, 1))
+4455 IF MC = 32 OR MC = 58 THEN T = T + 1: GOTO 4530
+4460 IF MID$(R$, I, 4) <> "ELSE" THEN GOTO 4530
+4465 IF I = 1 THEN GOTO 4480
+4470 MC = ASC(MID$(R$, I - 1, 1))
+4475 IF MC <> 32 AND MC <> 58 THEN GOTO 4530
+4480 IF T = 0 THEN GOTO 4495
+4485 T = T - 1
+4490 GOTO 4530
+4495 IF I + 4 > LEN(R$) THEN F = I: RETURN
+4500 MC = ASC(MID$(R$, I + 4, 1))
+4505 IF MC >= 65 AND MC <= 90 THEN GOTO 4530
+4510 IF MC >= 48 AND MC <= 57 THEN GOTO 4530
+4515 IF MC = 95 THEN GOTO 4530
+4520 IF MC = 36 THEN GOTO 4530
+4525 F = I: RETURN
+4530 I = I + 1
+4535 GOTO 4380
+4540 REM ---- split THEN part into sub-statements and execute ----
+4545 P = 1
+4550 Q = 1
+4555 S = 0
+4560 IF Q > LEN(R$) THEN GOTO 4740
+4565 MC = ASC(MID$(R$, Q, 1))
+4570 IF MC <> 34 THEN GOTO 4585
+4575 IF S = 0 THEN S = 1: GOTO 4730
+4580 S = 0: GOTO 4730
+4585 IF MC <> 58 THEN GOTO 4730
+4590 IF S <> 0 THEN GOTO 4730
+4595 I$ = MID$(R$, 1, Q - 1)
+4600 I$ = LTRIM$(I$)
+4605 IF LEFT$(I$, 2) <> "IF" THEN GOTO 4625
+4610 IF INSTR(I$, "THEN") = 0 THEN GOTO 4625
+4615 Q = Q + 1
+4620 GOTO 4560
+4625 B$ = MID$(R$, 1, Q - 1)
+4630 IF Q <> LEN(R$) THEN GOTO 4645
+4635 I$ = ""
+4640 GOTO 4650
+4645 I$ = MID$(R$, Q + 1, LEN(R$) - Q)
+4650 GOSUB 4900
+4655 IF LEN(B$) = 0 THEN GOTO 4710
+4660 IF LEFT$(B$, 2) <> "IF" THEN GOTO 4695
+4665 GOSUB 11915
+4670 DPMODE = 1
+4675 GOSUB 1895
+4680 DPMODE = 0
+4685 GOSUB 11965
+4690 GOTO 4710
+4695 DPMODE = 1
+4700 GOSUB 1895
+4705 DPMODE = 0
+4710 R$ = I$
+4715 IF LEN(R$) = 0 THEN GOTO 4815
+4720 P = 1
+4725 Q = 1: S = 0: GOTO 4560
+4730 Q = Q + 1
+4735 GOTO 4560
+4740 B$ = R$
+4745 I$ = ""
+4750 GOSUB 4900
+4755 IF LEN(B$) = 0 THEN GOTO 4815
+4760 IF LEFT$(B$, 2) <> "IF" THEN GOTO 4795
+4765 GOSUB 11915
+4770 DPMODE = 1
+4775 GOSUB 1895
+4780 DPMODE = 0
+4785 GOSUB 11965
+4790 GOTO 4810
+4795 DPMODE = 1
+4800 GOSUB 1895
+4805 DPMODE = 0
+4810 R$ = I$
+4815 RETURN
+4820 REM ---- finish IF branches / process ELSE ----
+4825 GOSUB 4540
+4830 IF IFELSE = 0 THEN GOTO 4880
+4835 V = IFENDP: GOSUB 1365
+4840 GOSUB 13175
+4845 V = IFSKP: GOSUB 1365
+4850 GOSUB 12580
+4855 R$ = XC$(39)
+4860 GOSUB 4540
+4865 V = IFENDP: GOSUB 1365
+4870 GOSUB 12580
+4875 GOTO 1705
+4880 V = IFSKP: GOSUB 1365
+4885 GOSUB 12580
+4890 GOTO 1705
+4895 REM ---- trim THEN sub-statement in B$ ----
+4900 B$ = TRIM$(B$): RETURN
+4905 REM ---------------- ON expr GOSUB/GOTO table ----------------
+4910 I = 4: O = 0: H = 0: F = 0: OGK = 0
+4915 IF I > LEN(B$) - 3 THEN GOTO 5990
+4920 MC = ASC(MID$(B$, I, 1))
+4925 IF MC = 34 THEN O = 1 - O: GOTO 4980
+4930 IF O <> 0 THEN GOTO 4980
+4935 IF MC = 40 THEN H = H + 1: GOTO 4980
+4940 IF MC = 41 THEN H = H - 1: GOTO 4980
+4945 IF H <> 0 THEN GOTO 4980
+4950 IF MID$(B$, I, 5) = "GOSUB" THEN OGK = 5: GOTO 4960
+4955 IF MID$(B$, I, 4) <> "GOTO" THEN GOTO 4980 ELSE OGK = 4
+4960 IF I = 1 THEN GOTO 4970
+4965 MC = ASC(MID$(B$, I - 1, 1)): IF MC <> 32 AND MC <> 9 THEN GOTO 4980
+4970 IF I + OGK > LEN(B$) THEN GOTO 4985
+4975 MC = ASC(MID$(B$, I + OGK, 1)): IF MC = 32 OR MC = 9 THEN GOTO 4985
+4980 I = I + 1: GOTO 4915
+4985 W$ = R$: F = I
+4990 N$ = TRIM$(MID$(B$, 4, F - 4)): R$ = TRIM$(MID$(B$, F + OGK, LEN(B$) - F - OGK + 1))
+4995 IF LEN(N$) = 0 OR LEN(R$) = 0 THEN GOTO 5990
+5000 GOSUB 1305: OGT = V: GOSUB 1305: OGC = V: GOSUB 1305: OGE = V
+5005 V = OGC: GOSUB 1365: PRINT #2, "jmp ONC_"; Q$
+5010 V = OGT: GOSUB 1365: PRINT #2, "ONGT_"; Q$; ":": G = 0
+5015 G = G + 1: E$ = R$: K = 1: L = LEN(E$): GOSUB 7685
+5020 IF F = 0 THEN D$ = R$: R$ = "": GOTO 5030
+5025 D$ = MID$(R$, 1, F - 1): R$ = MID$(R$, F + 1, LEN(R$) - F)
+5030 D$ = TRIM$(D$): IF LEN(D$) = 0 THEN GOTO 5990
+5035 IF QUBMODE <> 0 THEN GOTO 5045
+5040 E = VAL(D$): IF E = 0 THEN GOTO 6000 ELSE V = E: GOSUB 1365: PRINT #2, "DW L"; Q$: GOTO 5060
+5045 E$ = D$: D = 1: GOSUB 6150: IF L$ = "" THEN GOTO 5990
+5050 IF H <> 0 THEN GOTO 5990
+5055 IF D <= LEN(E$) THEN GOTO 5990 ELSE PRINT #2, "DW QB_"; L$
+5060 R$ = LTRIM$(R$): IF LEN(R$) <> 0 THEN GOTO 5015
+5065 V = OGC: GOSUB 1365: PRINT #2, "ONC_"; Q$; ":"
+5070 GOSUB 8445: GOSUB 12145
+5075 V = OGE: GOSUB 1365: PRINT #2, "dec ax": PRINT #2, "cmp ax,"; G: PRINT #2, "jae ONE_"; Q$
+5080 PRINT #2, "shl ax,1": PRINT #2, "mov bx,ax"
+5085 V = OGT: GOSUB 1365: PRINT #2, "mov ax,[ONGT_"; Q$; "+BX+0]"
+5086 IF OGK = 5 THEN PRINT #2, "DB 255,208" ELSE PRINT #2, "DB 255,224"
+5090 V = OGE: GOSUB 1365: PRINT #2, "ONE_"; Q$; ":": R$ = W$: GOTO 1705
+5095 REM ---------------- GOSUB -------------------
+5100 D$ = MID$(B$, 7, LEN(B$) - 6)
+5105 D$ = TRIM$(D$)
+5110 K$ = "call "
+5115 GOSUB 5155
+5120 GOTO 1705
+5125 REM ---------------- GOTO --------------------
+5130 D$ = MID$(B$, 6, LEN(B$) - 5)
+5135 D$ = TRIM$(D$)
+5140 K$ = "jmp "
+5145 GOSUB 5155
+5150 GOTO 1705
+5155 REM ---- COMMON TARGET RESOLUTION FOR GOTO/GOSUB ----
+5160 REM Input:
+5165 REM   D$ = already trimmed target
+5170 REM   K$ = "call " OR "jmp "
+5175 REM Effect:
+5180 REM   emits K$ + "Lxxxxx" or K$ + "QB_name"
+5185 IF QUBMODE = 0 THEN GOTO 5225
+5190 E = VAL(D$)
+5195 IF E <> 0 THEN GOTO 5210
+5200 E$ = D$: D = 1: GOSUB 6150
+5205 IF L$ = "" THEN GOTO 5990
+5210 IF H <> 0 THEN GOTO 5990
+5215 IF D <= LEN(E$) THEN GOTO 5990
+5220 PRINT #2, K$; "QB_"; L$: RETURN
+5225 E = VAL(D$): V = E: GOSUB 1365
+5230 PRINT #2, K$; "L"; Q$: RETURN
+5235 REM ---------------- RETURN ------------------
+5240 PRINT #2, "ret"
+5245 GOTO 1705
+5250 REM ---------------- FOR ---------------------
+5255 B = B + 1
+5260 IF B > 4 THEN GOTO 5995
+5265 J = INSTR(B$, "=")
+5270 IF J = 0 THEN GOTO 5995
+5275 D$ = MID$(B$, 5, J - 5)
+5280 D$ = TRIM$(D$)
+5285 IF LEN(D$) = 0 THEN GOTO 5995
+5290 I = INSTR(B$, "TO")
+5295 IF I = 0 THEN GOTO 5995
+5300 FS = 1
+5305 K = INSTR(MID$(B$, I + 2, LEN(B$) - I - 1), "STEP")
+5310 IF K <> 0 THEN K = K + I + 1
+5315 E = VAL(MID$(B$, J + 1, I - J - 1))
+5320 IF K = 0 THEN N$ = MID$(B$, I + 3, LEN(B$) - I - 2): GOTO 5350
+5325 FS = VAL(MID$(B$, K + 4, LEN(B$) - K - 3))
+5330 IF FS = 0 THEN GOTO 5995
+5335 N$ = MID$(B$, I + 3, K - I - 3)
+5340 GOTO 5350
+5350 GOSUB 1305
+5355 IF B = 1 THEN S$ = D$: W = R: FS1 = FS: K1 = 0: GOTO 5405
+5360 IF B = 2 THEN T$ = D$: X = R: FS2 = FS: K2 = 0: GOTO 5405
+5365 IF B <> 3 THEN GOTO 5380
+5370 IF LEN(U$) <> 5 THEN GOTO 5380
+5375 GOTO 6020
+5380 IF B = 3 THEN U$ = D$: Y = R: FS3 = FS: K3 = 0: GOTO 5405
+5385 IF B <> 4 THEN GOTO 5400
+5390 IF LEN(V$) <> 5 THEN GOTO 5400
+5395 GOTO 6020
+5400 V$ = D$: Z = R: FS4 = FS: K4 = 0
+5405 PRINT #2, "mov ax,"; E
+5410 REM Q$ already contains the global FOR label number
+5415 GOSUB 13155
+5416 GOSUB 8445
+5417 GOSUB 12145
+5418 ON B GOTO 5420,5422,5424,5426: GOTO 5995
+5420 V = W: D$ = S$: GOTO 5428
+5422 V = X: D$ = T$: GOTO 5428
+5424 V = Y: D$ = U$: GOTO 5428
+5426 V = Z: D$ = V$
+5428 GOSUB 1365
+5429 F$ = "__F" + Q$
+5430 D$ = F$: GOSUB 13155
+5431 ON B GOTO 5432,5433,5434,5436: GOTO 5995
+5432 D$ = S$: GOTO 5438
+5433 D$ = T$: GOTO 5438
+5434 D$ = U$: GOTO 5438
+5436 D$ = V$
+5438 PRINT #2, "L_FOR_"; Q$; ":"
+5439 PRINT #2, "mov ax,[N_"; D$; "]"
+5440 PRINT #2, "cmp ax,[N_"; F$; "]"
+5441 IF FS > 0 THEN PRINT #2, "jg L_END_"; Q$: GOTO 5445
+5442 PRINT #2, "jl L_END_"; Q$
+5445 GOTO 1705
+5450 REM ---------------- NEXT --------------------
+5455 IF B = 0 THEN GOTO 5995
+5460 IF B = 1 AND K1 <> 0 THEN GOTO 5995
+5465 IF B = 2 AND K2 <> 0 THEN GOTO 5995
+5470 IF B = 3 AND K3 <> 0 THEN GOTO 5995
+5475 IF B = 4 AND K4 <> 0 THEN GOTO 5995
+5480 IF LEN(B$) = 4 THEN D$ = "": GOTO 5495
+5485 D$ = MID$(B$, 6, LEN(B$) - 5)
+5490 D$ = TRIM$(D$)
+5495 IF LEN(D$) <> 0 THEN GOTO 5520
+5500 IF B = 1 THEN D$ = S$: GOTO 5520
+5505 IF B = 2 THEN D$ = T$: GOTO 5520
+5510 IF B = 3 THEN D$ = U$: GOTO 5520
+5515 D$ = V$
+5520 ON B GOTO 5525,5540,5555,5570: GOTO 5995
+5525 IF D$ <> S$ THEN GOTO 5995
+5530 E = W: FS = FS1
+5535 GOTO 5585
+5540 IF D$ <> T$ THEN GOTO 5995
+5545 E = X: FS = FS2
+5550 GOTO 5585
+5555 IF D$ <> U$ THEN GOTO 5995
+5560 E = Y: FS = FS3
+5565 GOTO 5585
+5570 IF D$ <> V$ THEN GOTO 5995
+5575 E = Z: FS = FS4
+5580 PRINT #2, "DN "; D$
+5585 PRINT #2, "mov ax,[N_"; D$; "]"
+5590 PRINT #2, "add ax,"; FS
+5595 PRINT #2, "mov [N_"; D$; "],ax"
+5600 V = E: GOSUB 1365
+5605 PRINT #2, "jmp L_FOR_"; Q$
+5610 PRINT #2, "L_END_"; Q$; ":"
+5615 B = B - 1
+5620 GOTO 1705
+5625 REM ---------------- OPEN --------------------
+5630 K = INSTR(B$, "#")
+5635 IF K = 0 THEN GOTO 5990
+5640 FC = VAL(MID$(B$, K + 1, LEN(B$) - K))
+5645 IF FC < 1 THEN GOTO 5990
+5650 IF FC > 9 THEN GOTO 5990
+5655 I = INSTR(B$, CHR$(34))
+5660 IF I <> 0 THEN GOTO 5725
+5665 REM ---- OPEN X$ FOR ... ----
+5670 I = INSTR(B$, "FOR")
+5675 IF I = 0 THEN GOTO 5990
+5680 L$ = MID$(B$, 6, I - 6)
+5685 L$ = TRIM$(L$)
+5690 IF LEN(L$) = 0 THEN GOTO 5990
+5695 IF RIGHT$(L$, 1) <> "$" THEN GOTO 5990
+5700 IF LEN(L$) < 2 THEN GOTO 5990
+5705 D$ = LEFT$(L$, LEN(L$) - 1)
+5710 GOSUB 12645
+5715 GOSUB 12410
+5720 GOTO 5790
+5725 REM ---- OPEN "FILE" FOR ... ----
+5730 J = I + 1
+5735 IF J > LEN(B$) THEN GOTO 6010
+5740 IF ASC(MID$(B$, J, 1)) = 34 THEN GOTO 5755
+5745 J = J + 1
+5750 GOTO 5735
+5755 GOSUB 1305
+5760 PRINT #2, "jmp OPN_"; Q$
+5765 PRINT #2, "FNM_"; Q$; ":"
+5770 L$ = MID$(B$, I + 1, J - I - 1)
+5775 GOSUB 1335: PRINT #2, "DB 0"
+5780 PRINT #2, "OPN_"; Q$; ":"
+5785 PRINT #2, "mov dx,OFFSET FNM_"; Q$
+5790 IF INSTR(B$, "INPUT") = 0 THEN GOTO 5810
+5795 GOSUB 12350
+5800 GOSUB 12610
+5805 PRINT #2, "call OPENI": GOTO 1705
+5810 IF INSTR(B$, "OUTPUT") = 0 THEN GOTO 5990
+5815 GOSUB 12350
+5820 GOSUB 12610
+5825 PRINT #2, "call OPENO": GOTO 1705
+5830 REM ---------------- CLOSE -------------------
+5835 I = INSTR(B$, "#")
+5840 FC = VAL(MID$(B$, I + 1, LEN(B$) - I))
+5845 IF FC < 1 THEN GOTO 5990
+5850 IF FC > 9 THEN GOTO 5990
+5855 GOSUB 12350
+5860 GOSUB 12610
+5865 PRINT #2, "call CLOSEC"
+5870 GOTO 1705
+5875 REM ---------------- KILL --------------------
+5880 IF LEN(B$) < 5 THEN GOTO 5990
+5885 X$ = MID$(B$, 6, LEN(B$) - 5)
+5890 GOSUB 7780
+5895 GOSUB 12410
+5900 GOSUB 12350
+5905 PRINT #2, "call KILLF": GOTO 1705
+5910 REM ---------------- CLS --------------------
+5915 IF LEN(B$) <> 3 THEN GOTO 5990
+5920 GOSUB 13205
+5925 PRINT #2, "call CLSCR": GOTO 1705
+5930 REM ---------------- END ---------------------
+5935 IF B <> 0 THEN GOTO 5995
+5940 PRINT #2, "call RT_EXIT"
+5945 GOTO 1705
+5950 REM ---- LOCATE/COLOR COMMON PREAMBLE ----
+5955 I = INSTR(B$, ","): IF I = 0 THEN GOTO 5990
+5960 N$ = MID$(B$, K, I - K): GOSUB 8445
+5965 N$ = MID$(B$, I + 1, LEN(B$) - I): GOSUB 8445
+5970 GOSUB 12175: GOSUB 12145
+5975 GOSUB 13205
+5980 RETURN
+5985 REM ------------- ERROR MESSAGES --------------
+5990 ER = 1: GOTO 6030
+5995 ER = 2: GOTO 6030
+6000 ER = 3: GOTO 6030
+6005 ER = 4: GOTO 6030
+6010 ER = 5: GOTO 6030
+6015 ER = 6: GOTO 6030
+6020 ER = 7: GOTO 6030
+6025 ER = 8
+6030 PRINT "ERROR LINE "; A; ": ";
+6035 ON ER GOTO 6040,6045,6050,6055,6060,6065,6070,6075
+6040 PRINT "SYNTAX ERROR": GOTO 13115
+6045 PRINT "FOR ERROR": GOTO 13115
+6050 PRINT "BAD LINE NUMBER": GOTO 13115
+6055 PRINT "MISSING )": GOTO 13115
+6060 PRINT "MISSING QUOTE": GOTO 13115
+6065 PRINT "TYPE MISMATCH": GOTO 13115
+6070 PRINT "INTERNAL ERROR": GOTO 13115
+6075 PRINT "IF ERROR"
+6080 GOTO 13115
+6085 REM ---------------- Footer + Runtime ----------
+6090 IF B <> 0 THEN GOTO 5995
+6095 IF IFLVL <> 0 THEN GOTO 6025
+6096 IF DA <> 0 THEN GOTO 6099
+6097 IF UDA = 0 THEN GOTO 6100
+6098 PRINT #2, "DATA_BEGIN:": PRINT #2, "DW 0": PRINT #2, "DW 0": GOTO 6100
+6099 V = DA: GOSUB 1365: PRINT #2, "DTN"; Q$; ":": PRINT #2, "DW 0": PRINT #2, "DW 0"
+6100 CLOSE #1
+6105 OPEN "RUNTIME.ASM" FOR INPUT AS #1
+6110 IF EOF(1) <> 0 THEN GOTO 6130
+6115 LINE INPUT #1, A$
+6120 PRINT #2, A$
+6125 GOTO 6110
+6130 CLOSE #1
+6135 CLOSE #2
+6140 PRINT "DONE."
+6145 GOTO 13115
+6150 REM ---- READID: identifier up to 8 characters ----
+6155 L$ = ""
+6160 H = 0
+6165 IF D > LEN(E$) THEN RETURN
+6170 MC = ASC(MID$(E$, D, 1))
+6175 IF MC < 65 OR MC > 90 THEN RETURN
+6180 L$ = CHR$(MC)
+6185 D = D + 1
+6190 IF D > LEN(E$) THEN GOTO 6235
+6195 MC = ASC(MID$(E$, D, 1))
+6200 IF MC = 95 THEN GOTO 6220
+6205 IF MC >= 48 AND MC <= 57 THEN GOTO 6220
+6210 IF MC >= 65 AND MC <= 90 THEN GOTO 6220
+6215 GOTO 6235
+6220 IF LEN(L$) < 8 THEN L$ = L$ + CHR$(MC)
+6225 D = D + 1
+6230 GOTO 6190
+6235 IF D > LEN(E$) THEN RETURN
+6240 IF MC <> 36 THEN RETURN
+6245 H = 1
+6250 D = D + 1
+6255 RETURN
+6260 REM ---------------- NEXTTOKEN ----------------
+6265 IF D > LEN(E$) THEN TK = 0: RETURN
+6270 MC = ASC(MID$(E$, D, 1))
+6275 IF MC = 32 THEN D = D + 1: GOTO 6265
+6280 IF MC < 65 OR MC > 90 THEN GOTO 6345
+6285 T = D
+6290 OH = H
+6295 GOSUB 6150
+6300 TH = H
+6305 H = OH
+6310 IF TH <> 0 THEN GOTO 6340
+6315 IF L$ = "MOD" THEN TK = 1: RETURN
+6320 IF L$ = "XOR" THEN TK = 2: RETURN
+6325 IF L$ = "AND" THEN TK = 3: RETURN
+6330 IF L$ = "OR" THEN TK = 4: RETURN
+6335 IF L$ = "NOT" THEN TK = 5: RETURN
+6340 D = T
+6345 TK = ASC(MID$(E$, D, 1))
+6350 D = D + 1
+6355 RETURN
+6360 REM ---------------- PREC ---------------------
+6365 IF TK = 5 THEN H = 7: RETURN
+6370 IF TK = 94 THEN H = 6: RETURN
+6375 IF TK = 1 THEN H = 5: RETURN
+6380 IF TK = 47 THEN H = 5: RETURN
+6385 IF TK = 92 THEN H = 5: RETURN
+6390 IF TK = 42 THEN H = 5: RETURN
+6395 IF TK = 43 THEN H = 4: RETURN
+6400 IF TK = 45 THEN H = 4: RETURN
+6405 IF TK = 3 THEN H = 3: RETURN
+6410 IF TK = 2 THEN H = 2: RETURN
+6415 IF TK = 4 THEN H = 1: RETURN
+6420 H = 0
+6425 RETURN
+6430 REM ---------------- FACTOR -------------------
+6435 IF TK <> 5 THEN GOTO 6455
+6440 GOSUB 6260
+6445 GOSUB 6430
+6450 GOSUB 12145: PRINT #2, "not ax": GOTO 12160
+6455 IF TK <> 43 THEN GOTO 6465
+6460 GOSUB 6260: GOTO 6430
+6465 IF TK <> 45 THEN GOTO 6485
+6470 GOSUB 6260
+6475 GOSUB 6430
+6480 GOSUB 12145: PRINT #2, "neg ax": GOTO 12160
+6485 IF TK < 65 THEN GOTO 6660
+6490 IF TK > 90 THEN GOTO 6660
+6495 T = D
+6500 OH = H
+6505 XC$(40) = L$
+6510 D = D - 1
+6515 GOSUB 6150
+6520 TH = H
+6525 U = D
+6530 D = T
+6535 H = OH
+6540 L$ = XC$(40)
+6545 IF TH <> 0 THEN GOTO 6660
+6550 IF U > LEN(E$) THEN GOTO 6660
+6555 IF MC <> 40 THEN GOTO 6660
+6560 IF L$ = "LEN" THEN GOTO 7085
+6565 IF L$ = "ABS" THEN GOTO 7040
+6570 IF L$ = "SGN" THEN GOTO 7060
+6575 IF L$ = "RND" THEN GOTO 7125
+6580 IF L$ = "INT" THEN GOTO 7210
+6585 IF L$ = "SQR" THEN GOTO 7280
+6590 IF L$ = "VAL" THEN GOTO 7170
+6595 IF L$ = "MIN" THEN GOSUB 16035: PRINT #2, "call MINS": GOTO 16115
+6600 IF L$ = "MAX" THEN GOSUB 16035: PRINT #2, "call MAXS": GOTO 16115
+6605 IF L$ = "XALLOC" THEN GOTO 14080
+6610 IF L$ = "TIMER" THEN GOTO 14360
+6615 IF L$ = "EXEC" THEN GOTO 14410
+6620 IF L$ = "CPUID" THEN GOTO 14530
+6625 IF L$ = "PEEK" THEN GOTO 15455
+6630 IF L$ = "INP" THEN GOTO 16460
+6635 IF L$ = "ASC" THEN GOTO 7240
+6640 IF L$ = "EOF" THEN GOTO 7300
+6645 IF L$ = "EXIST" THEN GOTO 7355
+6650 IF L$ = "INSTR" THEN GOTO 7400
+6655 GOTO 8370
+6660 IF TK = 40 THEN GOTO 6685
+6665 IF TK = 38 THEN GOTO 15805
+6670 IF TK >= 48 THEN GOTO 6720
+6675 IF TK >= 65 THEN GOTO 6755
+6680 GOTO 5990
+6685 GOSUB 6260
+6690 I = C: C = 1
+6695 GOSUB 6790
+6700 C = I
+6705 IF TK = 41 THEN GOTO 6715
+6710 GOTO 6005
+6715 GOTO 6260
+6720 IF TK > 57 THEN GOTO 6755
+6725 N$ = ""
+6730 IF TK < 48 THEN GOTO 6745
+6735 IF TK > 57 THEN GOTO 6745
+6740 N$ = N$ + CHR$(TK): GOSUB 6260: GOTO 6730
+6745 PRINT #2, "mov ax,"; N$
+6750 GOTO 12160
+6755 D = D - 1
+6760 GOSUB 6150
+6765 IF H <> 0 THEN GOTO 6015
+6770 PRINT #2, "DN "; L$
+6775 PRINT #2, "mov ax,[N_"; L$; "]"
+6780 GOSUB 12160
+6785 GOTO 6260
+6790 REM ---------------- EXPR ---------------------
+6795 GOSUB 6430
+6800 REM jump label
+6805 GOSUB 6360
+6810 IF H < C THEN RETURN
+6815 IF TK <> 94 THEN GOTO 6845
+6820 GOSUB 11060
+6825 GOSUB 12520
+6830 PRINT #2, "call POWS"
+6835 GOSUB 12160
+6840 GOTO 6800
+6845 IF TK <> 43 THEN GOTO 6870
+6850 GOSUB 11060
+6855 PRINT #2, "add ax,bx"
+6860 GOSUB 12160
+6865 GOTO 6800
+6870 IF TK <> 45 THEN GOTO 6895
+6875 GOSUB 11060
+6880 PRINT #2, "sub ax,bx"
+6885 GOSUB 12160
+6890 GOTO 6800
+6895 IF TK <> 42 THEN GOTO 6920
+6900 GOSUB 11060
+6905 PRINT #2, "imul bx"
+6910 GOSUB 12160
+6915 GOTO 6800
+6920 IF TK = 47 THEN GOTO 6930
+6925 IF TK <> 92 THEN GOTO 6955
+6930 GOSUB 11060
+6935 PRINT #2, "cwd"
+6940 PRINT #2, "idiv bx"
+6945 GOSUB 12160
+6950 GOTO 6800
+6955 IF TK <> 1 THEN GOTO 6990
+6960 GOSUB 11060
+6965 PRINT #2, "cwd"
+6970 PRINT #2, "idiv bx"
+6975 PRINT #2, "mov ax,dx"
+6980 GOSUB 12160
+6985 GOTO 6800
+6990 IF TK = 2 THEN OP = 2: GOTO 7010
+6995 IF TK = 3 THEN OP = 3: GOTO 7010
+7000 IF TK = 4 THEN OP = 4: GOTO 7010
+7005 GOTO 5990
+7010 GOSUB 11060
+7015 IF OP = 2 THEN PRINT #2, "xor ax,bx": GOTO 7030
+7020 IF OP = 3 THEN PRINT #2, "and ax,bx": GOTO 7030
+7025 PRINT #2, "or ax,bx"
+7030 GOSUB 12160: GOTO 6800
+7035 REM end
+7040 REM ---- ABS(num) ----
+7045 I = D + 2: GOSUB 7575: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
+7050 GOSUB 8445: GOSUB 12145: PRINT #2, "cwd": PRINT #2, "xor ax,dx"
+7055 PRINT #2, "sub ax,dx": GOSUB 12160: D = JPAREN + 1: GOTO 6260
+7060 REM ---- SGN(num) ----
+7065 I = D + 2: GOSUB 7575: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
+7070 GOSUB 8445: GOSUB 12145: GOSUB 1305: L$ = Q$
+7075 PRINT #2, "cmp ax,0": PRINT #2, "je SGN_"; L$: PRINT #2, "mov ax,1": PRINT #2, "jg SGN_"; L$
+7080 PRINT #2, "mov ax,-1": PRINT #2, "SGN_"; L$; ":": GOSUB 12160: D = JPAREN + 1: GOTO 6260
+7085 REM ---- LEN(str) ----
+7090 I = D + 2
+7095 GOSUB 16285
+7100 GOSUB 12365
+7105 PRINT #2, "call LEN"
+7110 GOSUB 12160
+7115 D = JPAREN + 1
+7120 GOTO 6260
+7125 REM ---- RND(num) ----
+7130 I = D + 2
+7135 GOSUB 7575
+7140 JPAREN = J
+7145 N$ = MID$(E$, I + 1, JPAREN - I - 1)
+7150 GOSUB 8445
+7155 GOSUB 12145
+7160 PRINT #2, "mov bx,ax": GOSUB 12505: PRINT #2, "call RNDS"
+7165 GOSUB 12160: D = JPAREN + 1: GOTO 6260
+7170 REM ---- VAL(str) ----
+7175 I = D + 2
+7180 GOSUB 16285
+7185 GOSUB 12380
+7190 PRINT #2, "call VAL"
+7195 GOSUB 12160
+7200 D = JPAREN + 1
+7205 GOTO 6260
+7210 REM ---- INT(num) ----
+7215 I = D + 2
+7220 GOSUB 7575
+7225 JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
+7230 GOSUB 8445
+7235 D = JPAREN + 1: GOTO 6260
+7240 REM ---- ASC(str) ----
+7245 I = D + 2
+7250 GOSUB 16285
+7255 PRINT #2, "xor ax,ax"
+7260 PRINT #2, "mov al,[si+1]"
+7265 GOSUB 12160
+7270 D = JPAREN + 1
+7275 GOTO 6260
+7280 REM ---- SQR(num) ----
+7285 I = D + 2: GOSUB 7575: JPAREN = J: N$ = MID$(E$, I + 1, JPAREN - I - 1)
+7290 GOSUB 8445: GOSUB 12145: GOSUB 12520: PRINT #2, "call SQRS"
+7295 GOSUB 12160: D = JPAREN + 1: GOTO 6260
+7300 REM ---- EOF(channel) ----
+7305 I = D + 2
+7310 GOSUB 7575
+7315 N$ = MID$(E$, I + 1, J - I - 1)
+7320 GOSUB 8445
+7325 GOSUB 12350
+7330 GOSUB 12145
+7335 PRINT #2, "call EOFC"
+7340 GOSUB 12160
+7345 D = J + 1
+7350 GOTO 6260
+7355 REM ---- EXIST(str) ----
+7360 I = D + 4
+7365 GOSUB 16285
+7370 GOSUB 12410
+7375 GOSUB 12350
+7380 PRINT #2, "call EXISTF"
+7385 GOSUB 12160
+7390 D = JPAREN + 1
+7395 GOTO 6260
+7400 REM ---- INSTR(str, pat) / INSTR(start, str, pat) ----
+7405 I = D + 4
+7410 GOSUB 7575
+7415 K = I + 1
+7420 L = J - 1
+7425 GOSUB 7685
+7430 G = F
+7435 IF G = 0 THEN GOTO 5990
+7440 K = G + 1
+7445 L = J - 1
+7450 GOSUB 7685
+7455 H = F
+7460 GOSUB 12365
+7465 IF H <> 0 THEN GOTO 7515
+7470 X$ = MID$(E$, I + 1, G - I - 1)
+7475 Y$ = MID$(E$, G + 1, J - G - 1)
+7480 GOSUB 7780
+7485 PRINT #2, "mov dl,1"
+7490 GOSUB 8335
+7495 PRINT #2, "call INSTRS"
+7500 GOSUB 12160
+7505 D = J + 1
+7510 GOTO 6260
+7515 N$ = MID$(E$, I + 1, G - I - 1)
+7520 X$ = MID$(E$, G + 1, H - G - 1)
+7525 Y$ = MID$(E$, H + 1, J - H - 1)
+7530 GOSUB 8445
+7535 GOSUB 12145
+7540 PRINT #2, "mov dl,al"
+7545 GOSUB 7780
+7550 GOSUB 8335
+7555 PRINT #2, "call INSTRS"
+7560 GOSUB 12160
+7565 D = J + 1
+7570 GOTO 6260
+7575 REM ---- find matching ) for I, result in J ----
+7580 OH = H
+7585 IF I < 1 THEN I = D
+7590 IF I < 1 THEN I = 1
+7595 J = I
+7600 H = 0
+7605 LO = 0
+7610 IF J > LEN(E$) THEN GOTO 6005
+7615 MC = ASC(MID$(E$, J, 1))
+7620 IF MC <> 34 THEN GOTO 7635
+7625 IF LO = 0 THEN LO = 1: GOTO 7675
+7630 LO = 0: GOTO 7675
+7635 IF LO <> 0 THEN GOTO 7675
+7640 IF MC <> 40 THEN GOTO 7650
+7645 H = H + 1: GOTO 7675
+7650 IF MC <> 41 THEN GOTO 7675
+7655 H = H - 1
+7660 IF H <> 0 THEN GOTO 7675
+7665 H = OH
+7670 RETURN
+7675 J = J + 1
+7680 GOTO 7610
+7685 REM ---- find first top-level comma from K to L, result in F ----
+7690 F = 0
+7695 H = 0
+7700 LO = 0
+7705 IF K > L THEN RETURN
+7710 MC = ASC(MID$(E$, K, 1))
+7715 IF MC <> 34 THEN GOTO 7730
+7720 IF LO = 0 THEN LO = 1: GOTO 7770
+7725 LO = 0: GOTO 7770
+7730 IF LO <> 0 THEN GOTO 7770
+7735 IF MC <> 40 THEN GOTO 7745
+7740 H = H + 1: GOTO 7770
+7745 IF MC <> 41 THEN GOTO 7755
+7750 H = H - 1: GOTO 7770
+7755 IF MC <> 44 THEN GOTO 7770
+7760 IF H <> 0 THEN GOTO 7770
+7765 F = K: RETURN
+7770 K = K + 1
+7775 GOTO 7705
+7780 REM ---- compile X$ to SI ----
+7785 GOSUB 14945
+7790 X$ = TRIM$(X$)
+7795 GOSUB 15255
+7800 IF E <> 0 THEN GOTO 8035
+7805 IF LEN(X$) < 2 THEN GOTO 5990
+7810 IF ASC(MID$(X$, 1, 1)) = 34 THEN GOTO 8095
+7815 IF LEFT$(X$, 5) = "CHR$(" THEN GOTO 8055
+7820 IF LEFT$(X$, 6) = "LEFT$(" THEN I = 6: GOSUB 16180: PRINT #2, "call LEFT": GOTO 16255
+7825 IF LEFT$(X$, 6) = "XGET$(" THEN GOTO 14220
+7830 IF LEFT$(X$, 7) = "RIGHT$(" THEN I = 7: GOSUB 16180: PRINT #2, "call RIGHT": GOTO 16255
+7835 IF LEFT$(X$, 7) = "LTRIM$(" THEN I = 7: GOSUB 16270: PRINT #2, "call LTRIM": GOTO 16280
+7840 IF LEFT$(X$, 6) = "TRIM$(" THEN I = 6: GOSUB 16270: PRINT #2, "REQ TR": PRINT #2, "call TRIM": GOTO 16280
+7845 IF LEFT$(X$, 7) = "RTRIM$(" THEN I = 7: GOSUB 16270: PRINT #2, "call RTRIM": GOTO 16280
+7850 IF LEFT$(X$, 7) = "UCASE$(" THEN I = 7: GOSUB 16270: PRINT #2, "call UCASE": GOTO 16280
+7855 IF LEFT$(X$, 5) = "STR$(" THEN GOTO 8585
+7860 IF LEFT$(X$, 5) = "MID$(" THEN GOTO 8135
+7865 IF X$ <> "DATE$" THEN GOTO 7895
+7870 GOSUB 12240
+7875 GOSUB 14580
+7880 PRINT #2, "call DATES"
+7885 GOSUB 12225
+7890 GOTO 14995
+7895 IF X$ <> "TIME$" THEN GOTO 7910
+7900 GOSUB 12240: GOSUB 14730: PRINT #2, "call TIMESTR": GOSUB 12225
+7905 GOTO 14995
+7910 IF X$ <> "INKEY$" THEN GOTO 7940
+7915 GOSUB 12240
+7920 PRINT #2, "REQ IK"
+7925 PRINT #2, "call INKEYS"
+7930 GOSUB 12225
+7935 GOTO 14995
+7940 IF X$ <> "INPUT$" THEN GOTO 7965
+7945 GOSUB 12240
+7950 GOSUB 12270
+7955 GOSUB 12225
+7960 GOTO 14995
+7965 GOSUB 11285
+7970 E$ = X$: D = 1
+7975 GOSUB 6150
+7980 IDTMP$ = L$
+7985 IDTYPE = H
+7990 I = D
+7995 GOSUB 11525
+8000 IF IDTMP$ = "" THEN GOTO 5990
+8005 IF IDTYPE = 0 THEN GOTO 5990
+8010 IF I > LEN(X$) THEN GOTO 8020
+8012 IF MID$(X$, I, 1) = "(" THEN E$ = X$: D = I: L$ = IDTMP$: GOSUB 17760: IF D > LEN(E$) THEN GOTO 14995 ELSE GOTO 5990
+8015 GOTO 5990
+8020 PRINT #2, "DS "; IDTMP$
+8025 PRINT #2, "mov si,OFFSET S_"; IDTMP$
+8030 GOTO 14995
+8035 REM ---- DEFAULT PATH FOR TOP-LEVEL STRING CONCATENATION ----
+8040 E$ = X$
+8045 GOSUB 9140
+8050 GOTO 14995
+8055 N$ = MID$(X$, 6, LEN(X$) - 6)
+8060 GOSUB 8445
+8065 GOSUB 12145
+8070 GOSUB 12190
+8075 PRINT #2, "mov BYTE PTR [si],1"
+8080 PRINT #2, "mov [si+1],al"
+8085 GOSUB 12190
+8090 GOTO 14995
+8095 L$ = MID$(X$, 2, LEN(X$) - 2)
+8100 GOSUB 1305
+8105 PRINT #2, "jmp SVX_"; Q$
+8110 PRINT #2, "SVD_"; Q$; ":"
+8115 GOSUB 1325
+8120 PRINT #2, "SVX_"; Q$; ":"
+8125 PRINT #2, "mov si,OFFSET SVD_"; Q$
+8130 GOTO 14995
+8135 REM ---- compile MID$(str,start,len) to SI ----
+8140 GOSUB 11770
+8145 E$ = X$
+8150 I = 5
+8155 GOSUB 7575
+8160 K = 6
+8165 L = J - 1
+8170 GOSUB 7685
+8175 G = F
+8180 IF G = 0 THEN GOTO 5990
+8185 K = G + 1
+8190 L = J - 1
+8195 GOSUB 7685
+8200 H = F
+8205 IF H = 0 THEN GOTO 5990
+8210 X$ = MID$(E$, 6, G - 6)
+8215 N$ = MID$(E$, G + 1, H - G - 1)
+8220 GOSUB 8445
+8225 N$ = MID$(E$, H + 1, J - H - 1)
+8230 GOSUB 8445
+8235 E$ = X$
+8240 GOSUB 9140
+8245 GOSUB 11835
+8250 GOSUB 12290
+8255 GOSUB 12255
+8260 GOSUB 12205
+8265 GOSUB 12305
+8270 GOSUB 12145
+8275 PRINT #2, "xor cx,cx"
+8280 PRINT #2, "mov cl,al"
+8285 GOSUB 12145
+8290 PRINT #2, "xor dx,dx"
+8295 PRINT #2, "mov dl,al"
+8300 GOSUB 12190
+8305 GOSUB 12290
+8310 GOSUB 12255
+8315 PRINT #2, "call MID"
+8320 GOSUB 12305
+8325 GOSUB 12190
+8330 GOTO 14995
+8335 REM ---- compile Y$ to DI (wrapper around 17450) ----
+8340 X$ = Y$
+8345 PRINT #2, "push si"
+8350 GOSUB 7780
+8355 PRINT #2, "mov di,si"
+8360 PRINT #2, "pop si"
+8365 RETURN
+8370 REM ---- BYTE ARRAY FACTOR A(I) ----
+8375 F$ = L$
+8380 I = U
+8385 GOSUB 7575
+8390 JPAREN = J
+8395 N$ = MID$(E$, I + 1, JPAREN - I - 1)
+8400 GOSUB 8445
+8405 GOSUB 12145
+8410 PRINT #2, "DS "; F$
+8415 PRINT #2, "mov si,OFFSET S_"; F$
+8420 GOSUB 12395
+8425 PRINT #2, "call ARRGETB"
+8430 GOSUB 12160
+8435 D = JPAREN + 1
+8440 GOTO 6260
+8445 REM ---- compile N$ as numeric subexpression ----
+8450 GOSUB 11105
+8455 E$ = N$
+8460 D = 1
+8465 C = 1
+8470 GOSUB 6260
+8475 GOSUB 6790
+8480 GOTO 11190
+8485 REM ---- COMMON COUNTED STRFUN PREAMBLE ----
+8490 REM FOR LEFT/RIGHT: STRING SOURCE IN SI, COUNT ON TOP OF STACK
+8495 GOSUB 11835
+8500 GOSUB 12145
+8505 PRINT #2, "xor cx,cx"
+8510 PRINT #2, "mov cl,al"
+8515 GOSUB 12290
+8520 GOSUB 12255
+8525 GOTO 12365
+8530 REM ---- SIMPLE_STRFUN_ARG: X$=function call, I=position of "(" ----
+8535 GOSUB 11770
+8540 E$ = X$
+8545 GOSUB 7575
+8550 X$ = MID$(E$, I + 1, J - I - 1)
+8555 E$ = X$: GOSUB 9140
+8560 GOSUB 11835: GOSUB 12290: GOSUB 12255: GOTO 12365
+8565 REM ---- SIMPLE_STRFUN_FINISH: TMP2$ to SI, restore STRFUNCTX ----
+8570 GOSUB 12305
+8575 GOSUB 12190
+8580 GOTO 14995
+8585 REM ---- compile STR$(num) to SI ----
+8590 E$ = X$
+8595 I = 5
+8600 GOSUB 7575
+8605 N$ = MID$(E$, 6, J - 6)
+8610 GOSUB 8445
+8615 GOSUB 12145
+8620 GOSUB 12255
+8625 GOSUB 12365: GOSUB 12380
+8630 PRINT #2, "call STRS"
+8635 GOSUB 12190
+8640 GOTO 14995
+8645 REM === MINIMAL STRING LEXER ===
+8650 REM Input: E$ (string expression)
+8655 REM Output: OT = token type, L$ = token value
+8660 REM OT: 0=EOF 1=VAR 2=LIT 3=FUNC 4=INPUT$ 5=INKEY$ 6=DATE$ 7=TIME$ 8=PLUS 9=COMMA 10=LP 11=RP 12=BAD
+8665 REM State: D = position in E$
+8670 IF D > LEN(E$) THEN OT = 0: RETURN
+8675 MC = ASC(MID$(E$, D, 1))
+8680 REM Skip spaces
+8685 IF MC = 32 THEN D = D + 1: GOTO 8670
+8690 IF MC = 9 THEN D = D + 1: GOTO 8670
+8695 IF MC = 10 THEN D = D + 1: GOTO 8670
+8700 IF MC = 13 THEN D = D + 1: GOTO 8670
+8705 REM String literal
+8710 IF MC = 34 THEN GOTO 9075
+8715 REM String variable (A$..Z$)
+8720 GOSUB 6150
+8725 IF L$ = "" THEN GOTO 9030
+8730 IF L$ = "LEFT" THEN GOTO 8875
+8735 IF L$ = "MID" THEN GOTO 8890
+8740 IF L$ = "RIGHT" THEN GOTO 8920
+8745 IF L$ = "LTRIM" THEN GOTO 8905
+8750 IF L$ = "RTRIM" THEN GOTO 8935
+8755 IF L$ = "TRIM" THEN GOTO 8965
+8760 IF L$ = "CHR" THEN GOTO 8950
+8765 IF L$ = "STR" THEN GOTO 8980
+8770 IF L$ = "XGET" THEN GOTO 8995
+8775 IF L$ = "UCASE" THEN GOTO 9010
+8780 IF H = 0 THEN GOTO 9025
+8785 IF L$ <> "INKEY" THEN GOTO 8805
+8790 IF D > LEN(E$) THEN OT = 5: RETURN
+8795 IF MC = 40 THEN GOTO 8805
+8800 OT = 5: RETURN
+8805 IF L$ <> "DATE" THEN GOTO 8825
+8810 IF D > LEN(E$) THEN OT = 6: RETURN
+8815 IF MC = 40 THEN GOTO 8825
+8820 OT = 6: RETURN
+8825 IF L$ <> "TIME" THEN GOTO 8845
+8830 IF D > LEN(E$) THEN OT = 7: RETURN
+8835 IF MC = 40 THEN GOTO 8845
+8840 OT = 7: RETURN
+8845 IF L$ <> "INPUT" THEN GOTO 8865
+8850 IF D > LEN(E$) THEN OT = 4: RETURN
+8855 IF MC = 40 THEN GOTO 8865
+8860 OT = 4: RETURN
+8865 IF D > LEN(E$) THEN OT = 1: RETURN
+8870 GOSUB 9131
+8872 IF MC <> 40 THEN OT = 1: RETURN
+8874 IF H <> 0 THEN OT = 1: RETURN
+8875 GOSUB 9131
+8880 IF MC = 40 THEN OT = 3: FL = 5: RETURN
+8885 OT = 1: RETURN
+8890 GOSUB 9131
+8895 IF MC = 40 THEN OT = 3: FL = 4: RETURN
+8900 OT = 1: RETURN
+8905 GOSUB 9131
+8910 IF MC = 40 THEN OT = 3: FL = 6: RETURN
+8915 OT = 1: RETURN
+8920 GOSUB 9131
+8925 IF MC = 40 THEN OT = 3: FL = 6: RETURN
+8930 OT = 1: RETURN
+8935 GOSUB 9131
+8940 IF MC = 40 THEN OT = 3: FL = 6: RETURN
+8945 OT = 1: RETURN
+8950 GOSUB 9131
+8955 IF MC = 40 THEN OT = 3: FL = 4: RETURN
+8960 OT = 1: RETURN
+8965 GOSUB 9131
+8970 IF MC = 40 THEN OT = 3: FL = 5: RETURN
+8975 OT = 1: RETURN
+8980 GOSUB 9131
+8985 IF MC = 40 THEN OT = 3: FL = 4: RETURN
+8990 OT = 1: RETURN
+8995 GOSUB 9131
+9000 IF MC = 40 THEN OT = 3: FL = 5: RETURN
+9005 OT = 1: RETURN
+9010 IF H = 0 THEN OT = 1: RETURN
+9015 GOSUB 9131
+9020 IF MC = 40 THEN OT = 3: FL = 6: RETURN
+9025 OT = 1: RETURN
+9030 REM Operator +
+9035 IF MC = 43 THEN OT = 8: L$ = "+": D = D + 1: RETURN
+9040 REM Comma
+9045 IF MC = 44 THEN OT = 9: L$ = ",": D = D + 1: RETURN
+9050 REM Parentheses
+9055 IF MC = 40 THEN OT = 10: L$ = "(": D = D + 1: RETURN
+9060 IF MC = 41 THEN OT = 11: L$ = ")": D = D + 1: RETURN
+9065 OT = 12: L$ = CHR$(MC): D = D + 1: RETURN
+9070 REM Quoted string
+9075 REM Scan until closing quote
+9080 J = D + 1
+9085 IF J > LEN(E$) THEN GOTO 6010
+9090 MC = ASC(MID$(E$, J, 1))
+9095 IF MC = 34 THEN GOTO 9105
+9100 J = J + 1: GOTO 9085
+9105 OT = 2
+9110 T = D + 1
+9115 U = J - D - 1
+9120 L$ = MID$(E$, T, U)
+9125 D = J + 1
+9130 RETURN
+9131 IF D > LEN(E$) THEN MC = 0: RETURN
+9132 MC = ASC(MID$(E$, D, 1))
+9133 IF MC <> 36 THEN RETURN
+9134 D = D + 1
+9135 IF D > LEN(E$) THEN MC = 0: RETURN
+9136 MC = ASC(MID$(E$, D, 1)): RETURN
+9140 REM === STRING EXPRESSION PARSER (RESULT IN TMP$, SI) ===
+9145 REM Input : E$ (string expression)
+9150 REM Output: result accumulator TMP$, SI -> TMP$
+9155 REM Independent of assignment (F$)
+9160 GOSUB 11285: REM save STRCTX
+9165 STDEP = STDEP + 1
+9170 IF STDEP > 4 THEN GOTO 6020
+9175 D = 1
+9180 REM --- initialize accumulator ---
+9185 GOSUB 12240
+9190 PRINT #2, "mov BYTE PTR [di],0"
+9195 REM --- parse first term ---
+9200 GOSUB 9365
+9205 REM --- copy first operand into TMP$ ---
+9210 GOSUB 12240
+9215 GOSUB 12205
+9220 REM === handle + chain ===
+9225 GOSUB 8645
+9230 IF OT = 8 THEN GOTO 9245
+9235 REM --- no more terms ---
+9240 GOTO 9345
+9245 REM --- SAVE ACCUMULATOR TMP$ BEFORE NESTED TERM ---
+9250 PRINT #2, "mov si,OFFSET TMP$"
+9255 GOSUB 15335
+9260 GOSUB 12205
+9265 REM --- parse next term ---
+9270 GOSUB 9365
+9275 REM --- SAVE NEW TERM TO TMP2$ ---
+9280 GOSUB 12255
+9285 GOSUB 12205
+9290 REM --- RESTORE OLD ACCUMULATOR FROM TMP3$ TO TMP$ ---
+9295 GOSUB 15365
+9300 GOSUB 12240
+9305 GOSUB 12205
+9310 REM --- APPEND TMP2$ TO TMP$ ---
+9315 GOSUB 12240
+9320 GOSUB 12190
+9325 PRINT #2, "call STRAPP"
+9330 GOSUB 12225
+9335 GOTO 9220
+9340 REM --- final result ---
+9345 GOSUB 12225
+9350 STDEP = STDEP - 1
+9355 GOSUB 11525: REM restore STRCTX
+9360 RETURN
+9365 REM === parse one string term into SI ===
+9370 REM expects: D at start of term
+9375 GOSUB 8645
+9378 IF OT = 1 THEN IF MID$(E$, D, 1) = "(" THEN GOTO 17760
+9380 ON OT GOTO 9390,9415,9500,9455,9475,9620,14745
+9385 GOTO 5990
+9390 REM --- string variable ---
+9395 PRINT #2, "DS "; L$
+9400 PRINT #2, "mov si,OFFSET S_"; L$
+9405 REM D already points to the next character (+ oder end)
+9410 RETURN
+9415 REM --- string literal ---
+9420 GOSUB 1305
+9425 PRINT #2, "jmp SLX_"; Q$
+9430 PRINT #2, "SLD_"; Q$; ":"
+9435 GOSUB 1325
+9440 PRINT #2, "SLX_"; Q$; ":"
+9445 PRINT #2, "mov si,OFFSET SLD_"; Q$
+9450 RETURN
+9455 REM --- INPUT$ ---
+9460 GOSUB 12240
+9465 GOSUB 12270
+9470 GOTO 12225
+9475 REM --- INKEY$ ---
+9480 GOSUB 12240
+9485 PRINT #2, "REQ IK"
+9490 PRINT #2, "call INKEYS"
+9495 GOTO 12225
+9500 REM --- string function ---
+9505 G = D - FL
+9510 I = D
+9515 GOSUB 7575
+9520 FNLEV = FNLEV + 1
+9525 IF FNLEV > 4 THEN GOTO 6020
+9530 IF FNLEV = 1 THEN FNE1 = J + 1
+9535 IF FNLEV = 2 THEN FNE2 = J + 1
+9540 IF FNLEV = 3 THEN FNE3 = J + 1
+9545 IF FNLEV = 4 THEN FNE4 = J + 1
+9550 X$ = MID$(E$, G, J - G + 1)
+9555 GOSUB 11285
+9560 GOSUB 15080
+9565 GOSUB 11105
+9570 E$ = X$: D = 1
+9575 GOSUB 7780
+9580 GOSUB 11190
+9585 GOSUB 11525
+9590 IF FNLEV = 1 THEN D = FNE1: FNLEV = 0: GOTO 9615
+9595 IF FNLEV = 2 THEN D = FNE2: FNLEV = 1: GOTO 9615
+9600 IF FNLEV = 3 THEN D = FNE3: FNLEV = 2: GOTO 9615
+9605 IF FNLEV = 4 THEN D = FNE4: FNLEV = 3: GOTO 9615
+9610 GOTO 6020
+9615 RETURN
+9620 REM --- DATE$ ---
+9625 GOSUB 12240
+9630 GOSUB 14580
+9635 PRINT #2, "call DATES"
+9640 GOTO 12225
+9645 REM ---- PURE STRING LITERAL TEST IN E$ ----
+9650 H = 0
+9655 IF LEN(E$) < 2 THEN RETURN
+9660 IF ASC(MID$(E$, 1, 1)) <> 34 THEN RETURN
+9665 J = 2
+9670 IF J > LEN(E$) THEN RETURN
+9675 IF ASC(MID$(E$, J, 1)) = 34 THEN GOTO 9685
+9680 J = J + 1: GOTO 9670
+9685 I = J + 1
+9690 IF I > LEN(E$) THEN GOTO 9710
+9695 MC = ASC(MID$(E$, I, 1))
+9700 IF MC = 32 OR MC = 9 THEN I = I + 1: GOTO 9690
+9705 RETURN
+9710 H = 1
+9715 L$ = MID$(E$, 2, J - 2)
+9720 RETURN
+9725 REM ---- ASSIGN PURE STRING LITERAL L$ TO SAVED DI ----
+9730 IF LEN(L$) <> 0 THEN GOTO 9745
+9735 GOSUB 12305
+9740 PRINT #2, "mov BYTE PTR [di],0": RETURN
+9745 GOSUB 1305
+9750 PRINT #2, "jmp SLA_"; Q$
+9755 PRINT #2, "SLD_"; Q$; ":"
+9760 GOSUB 1325: PRINT #2, "SLA_"; Q$; ":": GOSUB 12305: PRINT #2, "mov si,OFFSET SLD_"; Q$: GOTO 12205
+9765 REM ---------------- IF <bool-expr> THEN <stmts> ----------
+9770 I = 4
+9775 O = 0
+9780 P = 0
+9785 IF I > LEN(B$) - 3 THEN GOTO 9835
+9790 MC = ASC(MID$(B$, I, 1))
+9795 IF MC <> 34 THEN GOTO 9810
+9800 IF O = 0 THEN O = 1: GOTO 9830
+9805 O = 0: GOTO 9830
+9810 IF O <> 0 THEN GOTO 9830
+9815 IF MID$(B$, I, 4) <> "THEN" THEN GOTO 9830
+9820 P = I
+9825 GOTO 9835
+9830 I = I + 1: GOTO 9785
+9835 IF P = 0 THEN GOTO 5990
+9840 L$ = MID$(B$, 4, P - 4)
+9845 R$ = MID$(B$, P + 5, LEN(B$) - P - 4)
+9850 R$ = TRIM$(R$)
+9855 IF LEN(R$) = 0 THEN GOTO 13220
+9860 IFELSE = 0
+9865 GOSUB 4350
+9870 IF F = 0 THEN GOTO 9910
+9875 IFELSE = 1
+9880 XC$(39) = MID$(R$, F + 4, LEN(R$) - F - 3)
+9885 R$ = MID$(R$, 1, F - 1)
+9890 R$ = RTRIM$(R$)
+9895 IF RIGHT$(R$, 1) <> ":" THEN GOTO 9905
+9900 R$ = LEFT$(R$, LEN(R$) - 1)
+9905 XC$(39) = LTRIM$(XC$(39))
+9910 GOSUB 1305
+9915 IFSKP = V
+9920 IF IFELSE = 0 THEN GOTO 9935
+9925 GOSUB 1305
+9930 IFENDP = V
+9935 GOSUB 1305
+9940 I$ = Q$
+9945 GOSUB 9960
+9950 GOSUB 13140
+9955 GOTO 4820
+9960 REM ---- compile boolean expression in L$ as OR chain ----
+9965 GOSUB 10040
+9970 IF F = 0 THEN GOTO 10015
+9975 B$ = MID$(L$, 1, F - 1)
+9980 F$ = MID$(L$, F + 4, LEN(L$) - F - 3)
+9985 GOSUB 1305
+9990 K$ = Q$
+9995 GOSUB 10250
+10000 PRINT #2, "SKP_"; K$; ":"
+10005 L$ = F$
+10010 GOTO 9965
+10015 B$ = L$
+10020 V = IFSKP
+10025 GOSUB 1365
+10030 K$ = Q$
+10035 GOTO 10250
+10040 REM ---- find first top-level " OR " in L$, result in F ----
+10045 F = 0
+10050 H = 0
+10055 O = 0
+10060 I = 1
+10065 IF I > LEN(L$) - 3 THEN RETURN
+10070 MC = ASC(MID$(L$, I, 1))
+10075 IF MC <> 34 THEN GOTO 10090
+10080 IF O = 0 THEN O = 1: GOTO 10135
+10085 O = 0: GOTO 10135
+10090 IF O <> 0 THEN GOTO 10135
+10095 IF MC <> 40 THEN GOTO 10105
+10100 H = H + 1: GOTO 10135
+10105 IF MC <> 41 THEN GOTO 10115
+10110 H = H - 1: GOTO 10135
+10115 IF H <> 0 THEN GOTO 10135
+10120 IF MID$(L$, I, 4) <> " OR " THEN GOTO 10135
+10125 F = I
+10130 RETURN
+10135 I = I + 1
+10140 GOTO 10065
+10145 REM ---- find first top-level " AND " in B$, result in F ----
+10150 F = 0
+10155 H = 0
+10160 O = 0
+10165 I = 1
+10170 IF I > LEN(B$) - 4 THEN RETURN
+10175 MC = ASC(MID$(B$, I, 1))
+10180 IF MC <> 34 THEN GOTO 10195
+10185 IF O = 0 THEN O = 1: GOTO 10240
+10190 O = 0: GOTO 10240
+10195 IF O <> 0 THEN GOTO 10240
+10200 IF MC <> 40 THEN GOTO 10210
+10205 H = H + 1: GOTO 10240
+10210 IF MC <> 41 THEN GOTO 10220
+10215 H = H - 1: GOTO 10240
+10220 IF H <> 0 THEN GOTO 10240
+10225 IF MID$(B$, I, 5) <> " AND " THEN GOTO 10240
+10230 F = I
+10235 RETURN
+10240 I = I + 1
+10245 GOTO 10170
+10250 REM ---- compile AND group in B$; FALSE -> SKP_K$, TRUE -> THN_I$ ----
+10255 GOSUB 10145
+10260 IF F = 0 THEN GOTO 10290
+10265 A$ = MID$(B$, 1, F - 1)
+10270 W$ = MID$(B$, F + 5, LEN(B$) - F - 4)
+10275 GOSUB 10310
+10280 B$ = W$
+10285 GOTO 10255
+10290 A$ = B$
+10295 GOSUB 10310
+10300 PRINT #2, "jmp THN_"; I$
+10305 RETURN
+10310 REM ---- compile IF atom in A$; FALSE -> SKP_K$ ----
+10315 IFNEG = 0
+10320 GOSUB 10770
+10325 IF LEFT$(A$, 4) <> "NOT " THEN GOTO 10345
+10330 IFNEG = 1
+10335 A$ = MID$(A$, 5, LEN(A$) - 4)
+10340 GOSUB 10770
+10345 J = 1
+10350 O = 0
+10355 H = 0
+10360 IF J > LEN(A$) THEN GOTO 10640
+10365 MC = ASC(MID$(A$, J, 1))
+10370 IF MC <> 34 THEN GOTO 10385
+10375 IF O = 0 THEN O = 1: GOTO 10475
+10380 O = 0: GOTO 10475
+10385 IF O <> 0 THEN GOTO 10475
+10390 IF MC <> 40 THEN GOTO 10400
+10395 H = H + 1: GOTO 10475
+10400 IF MC <> 41 THEN GOTO 10410
+10405 H = H - 1: GOTO 10475
+10410 IF H <> 0 THEN GOTO 10475
+10415 IF MID$(A$, J, 2) <> "<>" THEN GOTO 10425
+10420 OPC = 4: H = 2: GOTO 10480
+10425 IF MID$(A$, J, 2) <> "<=" THEN GOTO 10435
+10430 OPC = 5: H = 2: GOTO 10480
+10435 IF MID$(A$, J, 2) <> ">=" THEN GOTO 10445
+10440 OPC = 6: H = 2: GOTO 10480
+10445 IF MC <> 61 THEN GOTO 10455
+10450 OPC = 1: H = 1: GOTO 10480
+10455 IF MC <> 60 THEN GOTO 10465
+10460 OPC = 2: H = 1: GOTO 10480
+10465 IF MC <> 62 THEN GOTO 10475
+10470 OPC = 3: H = 1: GOTO 10480
+10475 J = J + 1: GOTO 10360
+10480 X$ = A$
+10485 B$ = MID$(X$, J + H, LEN(X$) - J - H + 1)
+10490 A$ = MID$(X$, 1, J - 1)
+10495 GOSUB 10770
+10500 GOSUB 10790
+10505 IF E <> 0 THEN GOTO 10575
+10510 X$ = A$
+10515 A$ = B$
+10520 GOSUB 10790
+10525 A$ = X$
+10530 IF E <> 0 THEN GOTO 10575
+10535 E$ = A$: D = 1: C = 1
+10540 GOSUB 6260: GOSUB 6790
+10545 E$ = B$: D = 1: C = 1
+10550 GOSUB 6260: GOSUB 6790
+10555 GOSUB 12175
+10560 GOSUB 12145
+10565 PRINT #2, "cmp ax,bx"
+10570 GOTO 10675
+10575 X$ = A$: Y$ = B$
+10580 GOSUB 7780
+10585 PRINT #2, "mov di,OFFSET TMP3$"
+10590 GOSUB 12205
+10595 OSTDEP = STDEP
+10600 STDEP = STDEP + 1
+10605 IF STDEP > 3 THEN STDEP = OSTDEP: GOTO 6020
+10610 GOSUB 8335
+10615 STDEP = OSTDEP
+10620 PRINT #2, "mov si,OFFSET TMP3$"
+10625 PRINT #2, "call STRCMP"
+10630 PRINT #2, "cmp al,0"
+10635 GOTO 10675
+10640 REM ---- bare numeric truth expression ----
+10645 E$ = A$: D = 1: C = 1
+10650 GOSUB 6260: GOSUB 6790
+10655 GOSUB 12145
+10660 PRINT #2, "cmp ax,0"
+10665 IF IFNEG = 0 THEN PRINT #2, "je SKP_"; K$: RETURN
+10670 PRINT #2, "jne SKP_"; K$: RETURN
+10675 REM ---- EMIT JUMP TO SKP_K$ (NORMAL OR NOT) ----
+10680 IF OPC < 1 THEN GOTO 5990
+10685 IF OPC > 6 THEN GOTO 5990
+10690 IF IFNEG <> 0 THEN GOTO 10700
+10695 ON OPC GOTO 10705,10715,10725,10735,10745,10755
+10700 ON OPC GOTO 10710,10720,10730,10740,10750,10760
+10705 PRINT #2, "jne SKP_"; K$: RETURN
+10710 PRINT #2, "je SKP_"; K$: RETURN
+10715 PRINT #2, "jge SKP_"; K$: RETURN
+10720 PRINT #2, "jl SKP_"; K$: RETURN
+10725 PRINT #2, "jle SKP_"; K$: RETURN
+10730 PRINT #2, "jg SKP_"; K$: RETURN
+10735 PRINT #2, "je SKP_"; K$: RETURN
+10740 PRINT #2, "jne SKP_"; K$: RETURN
+10745 PRINT #2, "jg SKP_"; K$: RETURN
+10750 PRINT #2, "jle SKP_"; K$: RETURN
+10755 PRINT #2, "jl SKP_"; K$: RETURN
+10760 PRINT #2, "jge SKP_"; K$: RETURN
+10765 GOTO 5990
+10770 REM ---- trim A$ and B$ for boolean IF atom ----
+10775 A$ = TRIM$(A$)
+10780 B$ = TRIM$(B$)
+10785 RETURN
+10790 REM ---- check whether A$ is a string expression, result in E ----
+10795 E = 0
+10800 IF LEN(A$) = 0 THEN RETURN
+10805 REM --- strip one outer parenthesis layer if fully enclosing ---
+10810 IF LEFT$(A$, 1) <> "(" THEN GOTO 10845
+10815 GOSUB 11285
+10820 E$ = A$: I = 1
+10825 GOSUB 7575
+10830 IF J <> LEN(A$) THEN GOTO 10840
+10835 GOSUB 11525: A$ = MID$(A$, 2, LEN(A$) - 2): GOTO 10795
+10840 GOSUB 11525
+10845 REM --- direct string forms ---
+10850 IF ASC(MID$(A$, 1, 1)) = 34 THEN E = 1: RETURN
+10855 IF LEFT$(A$, 6) = "LEFT$(" THEN E = 1: RETURN
+10860 IF LEFT$(A$, 5) = "MID$(" THEN E = 1: RETURN
+10865 IF LEFT$(A$, 7) = "LTRIM$(" THEN E = 1: RETURN
+10870 IF LEFT$(A$, 7) = "RIGHT$(" THEN E = 1: RETURN
+10875 IF LEFT$(A$, 7) = "RTRIM$(" THEN E = 1: RETURN
+10880 IF LEFT$(A$, 6) = "TRIM$(" THEN E = 1: RETURN
+10885 IF LEFT$(A$, 5) = "CHR$(" THEN E = 1: RETURN
+10890 IF LEFT$(A$, 5) = "STR$(" THEN E = 1: RETURN
+10895 IF LEFT$(A$, 6) = "XGET$(" THEN E = 1: RETURN
+10900 IF LEFT$(A$, 7) = "UCASE$(" THEN E = 1: RETURN
+10905 IF A$ = "DATE$" THEN E = 1: RETURN
+10910 IF A$ = "TIME$" THEN E = 1: RETURN
+10915 IF A$ = "INKEY$" THEN E = 1: RETURN
+10920 IF A$ = "INPUT$" THEN E = 1: RETURN
+10925 REM --- check string identifier X$ ---
+10930 GOSUB 11285
+10935 E$ = A$: D = 1
+10940 GOSUB 6150
+10945 IDTMP$ = L$
+10950 IDTYPE = H
+10955 GOSUB 11525
+10960 IF IDTMP$ = "" THEN RETURN
+10965 IF IDTYPE = 0 THEN RETURN
+10970 E = 1
+10975 RETURN
+10980 REM ---- PUSH_EXPRC ----
+10985 ECTX = ECTX + 1
+10990 IF ECTX > 4 THEN GOTO 6020
+10995 ON ECTX GOTO 11000,11005,11010,11015: GOTO 6020
+11000 EC1 = C: RETURN
+11005 EC2 = C: RETURN
+11010 EC3 = C: RETURN
+11015 EC4 = C
+11020 RETURN
+11025 REM ---- POP_EXPRC ----
+11030 IF ECTX < 1 OR ECTX > 4 THEN GOTO 6020 ELSE ON ECTX GOTO 11035,11040,11045,11050
+11035 C = EC1: ECTX = 0: RETURN
+11040 C = EC2: ECTX = 1: RETURN
+11045 C = EC3: ECTX = 2: RETURN
+11050 C = EC4: ECTX = 3
+11055 RETURN
+11060 REM ---- PREP_BINOP_RHS ----
+11065 L = H
+11070 GOSUB 6260
+11075 GOSUB 10980
+11080 C = L + 1
+11085 GOSUB 6790
+11090 GOSUB 11025
+11095 GOSUB 12175
+11100 GOTO 12145
+11105 REM ---- PUSH_NUMCTX ----
+11110 NCTX = NCTX + 1
+11115 IF NCTX > 4 THEN GOTO 6020
+11120 ON NCTX GOTO 11125,11140,11155,11170: GOTO 6020
+11125 XC$(1) = E$
+11130 ND1 = D: NC1 = C: NK1 = TK
+11135 NJ1 = J: NH1 = H: NP1 = JPAREN: RETURN
+11140 XC$(2) = E$
+11145 ND2 = D: NC2 = C: NK2 = TK
+11150 NJ2 = J: NH2 = H: NP2 = JPAREN: RETURN
+11155 XC$(3) = E$
+11160 ND3 = D: NC3 = C: NK3 = TK
+11165 NJ3 = J: NH3 = H: NP3 = JPAREN: RETURN
+11170 XC$(4) = E$
+11175 ND4 = D: NC4 = C: NK4 = TK
+11180 NJ4 = J: NH4 = H: NP4 = JPAREN
+11185 RETURN
+11190 REM ---- POP_NUMCTX ----
+11195 IF NCTX < 1 OR NCTX > 4 THEN GOTO 6020 ELSE ON NCTX GOTO 11200,11220,11240,11260
+11200 E$ = XC$(1)
+11205 D = ND1: C = NC1: TK = NK1
+11210 J = NJ1: H = NH1: JPAREN = NP1
+11215 NCTX = 0: RETURN
+11220 E$ = XC$(2)
+11225 D = ND2: C = NC2: TK = NK2
+11230 J = NJ2: H = NH2: JPAREN = NP2
+11235 NCTX = 1: RETURN
+11240 E$ = XC$(3)
+11245 D = ND3: C = NC3: TK = NK3
+11250 J = NJ3: H = NH3: JPAREN = NP3
+11255 NCTX = 2: RETURN
+11260 E$ = XC$(4)
+11265 D = ND4: C = NC4: TK = NK4
+11270 J = NJ4: H = NH4: JPAREN = NP4
+11275 NCTX = 3
+11280 RETURN
+11285 REM ---- PUSH_STRCTX ----
+11290 SCTX = SCTX + 1
+11295 IF SCTX > 8 THEN GOTO 6020
+11300 ON SCTX GOTO 11305,11335,11365,11395,11425,11455,11480,11510: GOTO 6020
+11305 XC$(5) = E$
+11310 SD1 = D: SC1 = C: ST1 = TK
+11315 XC$(13) = L$
+11320 SJN1 = J: SH1 = H
+11325 XC$(17) = X$
+11330 RETURN
+11335 XC$(6) = E$
+11340 SD2 = D: SC2 = C: ST2 = TK
+11345 XC$(14) = L$
+11350 SJN2 = J: SH2 = H
+11355 XC$(18) = X$
+11360 RETURN
+11365 XC$(7) = E$
+11370 SD3 = D: SC3 = C: ST3 = TK
+11375 XC$(15) = L$
+11380 SJN3 = J: SH3 = H
+11385 XC$(19) = X$
+11390 RETURN
+11395 XC$(8) = E$
+11400 SD4 = D: SC4 = C: ST4 = TK
+11405 XC$(16) = L$
+11410 SJN4 = J: SH4 = H
+11415 XC$(20) = X$
+11420 RETURN
+11425 XC$(27) = E$
+11430 SD5 = D: SC5 = C: ST5 = TK
+11435 XC$(29) = L$
+11440 SJN5 = J: SH5 = H
+11445 XC$(31) = X$
+11450 RETURN
+11455 XC$(28) = E$: SD6 = D: SC6 = C: ST6 = TK
+11460 XC$(30) = L$
+11465 SJN6 = J: SH6 = H
+11470 XC$(32) = X$
+11475 RETURN
+11480 XC$(33) = E$
+11485 SD7 = D: SC7 = C: ST7 = TK
+11490 XC$(35) = L$
+11495 SJN7 = J: SH7 = H
+11500 XC$(37) = X$
+11505 RETURN
+11510 XC$(34) = E$: SD8 = D: SC8 = C: ST8 = TK
+11515 XC$(36) = L$: SJN8 = J: SH8 = H
+11520 XC$(38) = X$: RETURN
+11525 REM ---- POP_STRCTX ----
+11530 IF SCTX < 1 OR SCTX > 8 THEN GOTO 6020
+11535 ON SCTX GOTO 11540,11570,11600,11630,11660,11690,11715,11740
+11540 E$ = XC$(5)
+11545 D = SD1: C = SC1: TK = ST1
+11550 L$ = XC$(13)
+11555 J = SJN1: H = SH1
+11560 X$ = XC$(17)
+11565 SCTX = 0: RETURN
+11570 E$ = XC$(6)
+11575 D = SD2: C = SC2: TK = ST2
+11580 L$ = XC$(14)
+11585 J = SJN2: H = SH2
+11590 X$ = XC$(18)
+11595 SCTX = 1: RETURN
+11600 E$ = XC$(7)
+11605 D = SD3: C = SC3: TK = ST3
+11610 L$ = XC$(15)
+11615 J = SJN3: H = SH3
+11620 X$ = XC$(19)
+11625 SCTX = 2: RETURN
+11630 E$ = XC$(8)
+11635 D = SD4: C = SC4: TK = ST4
+11640 L$ = XC$(16)
+11645 J = SJN4: H = SH4
+11650 X$ = XC$(20)
+11655 SCTX = 3: RETURN
+11660 E$ = XC$(27)
+11665 D = SD5: C = SC5: TK = ST5
+11670 L$ = XC$(29)
+11675 J = SJN5: H = SH5
+11680 X$ = XC$(31)
+11685 SCTX = 4: RETURN
+11690 E$ = XC$(28)
+11695 D = SD6: C = SC6: TK = ST6
+11700 L$ = XC$(30)
+11705 J = SJN6: H = SH6
+11710 X$ = XC$(32): SCTX = 5: RETURN
+11715 E$ = XC$(33)
+11720 D = SD7: C = SC7: TK = ST7
+11725 L$ = XC$(35)
+11730 J = SJN7: H = SH7
+11735 X$ = XC$(37): SCTX = 6: RETURN
+11740 E$ = XC$(34)
+11745 D = SD8: C = SC8: TK = ST8
+11750 L$ = XC$(36)
+11755 J = SJN8: H = SH8
+11760 X$ = XC$(38): SCTX = 7
+11765 RETURN
+11770 REM ---- PUSH_SRCCTX ----
+11775 SRCCTX = SRCCTX + 1
+11780 IF SRCCTX > 4 THEN GOTO 6020
+11785 ON SRCCTX GOTO 11790,11800,11810,11820: GOTO 6020
+11790 XC$(21) = E$
+11795 SRJ1 = J: SRH1 = H: SRO1 = O: RETURN
+11800 XC$(22) = E$
+11805 SRJ2 = J: SRH2 = H: SRO2 = O: RETURN
+11810 XC$(23) = E$
+11815 SRJ3 = J: SRH3 = H: SRO3 = O: RETURN
+11820 XC$(24) = E$
+11825 SRJ4 = J: SRH4 = H: SRO4 = O
+11830 RETURN
+11835 REM ---- POP_SRCCTX ----
+11840 IF SRCCTX < 1 OR SRCCTX > 4 THEN GOTO 6020
+11845 ON SRCCTX GOTO 11850,11865,11880,11895
+11850 E$ = XC$(21)
+11855 J = SRJ1: H = SRH1: O = SRO1
+11860 SRCCTX = 0: RETURN
+11865 E$ = XC$(22)
+11870 J = SRJ2: H = SRH2: O = SRO2
+11875 SRCCTX = 1: RETURN
+11880 E$ = XC$(23)
+11885 J = SRJ3: H = SRH3: O = SRO3
+11890 SRCCTX = 2: RETURN
+11895 E$ = XC$(24)
+11900 J = SRJ4: H = SRH4: O = SRO4
+11905 SRCCTX = 3
+11910 RETURN
+11915 REM ---- PUSH_THENI ----
+11920 TICTX = TICTX + 1
+11925 IF TICTX > 2 THEN GOTO 6020
+11930 IF TICTX <> 1 THEN GOTO 11950
+11935 TSK1 = IFSKP
+11940 XC$(25) = XC$(39)
+11945 TEND1 = IFENDP: TEL1 = IFELSE: RETURN
+11950 TSK2 = IFSKP
+11955 XC$(26) = XC$(39)
+11960 TEND2 = IFENDP: TEL2 = IFELSE: RETURN
+11965 REM ---- POP_THENI ----
+11970 IF TICTX = 0 THEN GOTO 6020
+11975 IF TICTX <> 1 THEN GOTO 11995
+11980 IFSKP = TSK1
+11985 XC$(39) = XC$(25)
+11990 IFENDP = TEND1: IFELSE = TEL1: TICTX = 0: RETURN
+11995 IFSKP = TSK2
+12000 XC$(39) = XC$(26)
+12005 IFENDP = TEND2: IFELSE = TEL2: TICTX = 1: RETURN
+12010 REM ---- tie uppercasing to QUBMODE ----
+12015 IF QUBMODE = 0 THEN GOTO 12050
+12020 IF QUBMODE = 1 THEN GOTO 12030
+12025 IF VAL(A$) <> 0 THEN GOTO 12050
+12030 R$ = ""
+12035 UCO = 0
+12040 UCI = 1
+12045 GOTO 12075
+12050 UCQ = INSTR(A$, " ")
+12055 IF UCQ = 0 THEN RETURN
+12060 R$ = LEFT$(A$, UCQ)
+12065 UCO = 0
+12070 UCI = UCQ + 1
+12075 IF UCI > LEN(A$) THEN GOTO 12135
+12080 UCCH = ASC(MID$(A$, UCI, 1))
+12085 IF UCCH <> 34 THEN GOTO 12100
+12090 IF UCO = 0 THEN UCO = 1: GOTO 12120
+12095 UCO = 0: GOTO 12120
+12100 IF UCO <> 0 THEN GOTO 12120
+12105 IF UCCH < 97 THEN GOTO 12120
+12110 IF UCCH > 122 THEN GOTO 12120
+12115 UCCH = UCCH - 32
+12120 R$ = R$ + CHR$(UCCH)
+12125 UCI = UCI + 1
+12130 GOTO 12075
+12135 A$ = R$
+12140 RETURN
+12145 REM ---- EMIT_POPAX ----
+12150 PRINT #2, "pop ax"
+12155 RETURN
+12160 REM ---- EMIT_PUSHAX ----
+12165 PRINT #2, "push ax"
+12170 RETURN
+12175 REM ---- EMIT_POPBX ----
+12180 PRINT #2, "pop bx"
+12185 RETURN
+12190 REM ---- EMIT_SI_TMP2 ----
+12195 PRINT #2, "mov si,OFFSET TMP2$"
+12200 RETURN
+12205 REM ---- EMIT_STRCOPY ----
+12210 GOSUB 12365
+12215 PRINT #2, "call STRCPY"
+12220 RETURN
+12225 REM ---- EMIT_SI_TMP ----
+12230 PRINT #2, "mov si,OFFSET TMP$"
+12235 RETURN
+12240 REM ---- EMIT_DI_TMP ----
+12245 PRINT #2, "mov di,OFFSET TMP$"
+12250 RETURN
+12255 REM ---- EMIT_DI_TMP2 ----
+12260 PRINT #2, "mov di,OFFSET TMP2$"
+12265 RETURN
+12270 REM ---- EMIT_INPUTS ----
+12275 GOSUB 12335
+12280 PRINT #2, "call INPUTS"
+12285 RETURN
+12290 REM ---- EMIT_PUSHDI ----
+12295 PRINT #2, "push di"
+12300 RETURN
+12305 REM ---- EMIT_POPDI ----
+12310 PRINT #2, "pop di"
+12315 RETURN
+12320 REM ---- EMIT_REQ_PR ----
+12325 IF UPR = 0 THEN PRINT #2, "REQ PR": LET UPR = 1
+12330 RETURN
+12335 REM ---- EMIT_REQ_IN ----
+12340 IF UIN = 0 THEN PRINT #2, "REQ IN": LET UIN = 1
+12345 RETURN
+12350 REM ---- EMIT_REQ_FI ----
+12355 IF UFI = 0 THEN PRINT #2, "REQ FI": LET UFI = 1
+12360 RETURN
+12365 REM ---- EMIT_REQ_ST ----
+12370 IF UST = 0 THEN PRINT #2, "REQ ST": LET UST = 1
+12375 RETURN
+12380 REM ---- EMIT_REQ_CV ----
+12385 IF UCV = 0 THEN PRINT #2, "REQ CV": LET UCV = 1
+12390 RETURN
+12395 REM ---- EMIT_REQ_AR ----
+12400 IF UAR = 0 THEN PRINT #2, "REQ AR": LET UAR = 1
+12405 RETURN
+12410 REM ---- EMIT_NB_ASCIIZ_FROM_SI ----
+12415 PRINT #2, "mov di,OFFSET NB"
+12420 GOSUB 12205
+12425 PRINT #2, "xor bx,bx"
+12430 PRINT #2, "mov bl,[NB]"
+12435 PRINT #2, "mov BYTE PTR [NB+bx+1],0"
+12440 PRINT #2, "mov dx,OFFSET NB+1": RETURN
+12445 REM ---- EMIT_REQ_BI ----
+12450 IF UBI = 0 THEN PRINT #2, "REQ BI": LET UBI = 1
+12455 RETURN
+12460 REM ---- EMIT_REQ_FL ----
+12465 IF UFL = 0 THEN PRINT #2, "REQ FL": LET UFL = 1
+12470 RETURN
+12475 REM ---- EMIT_REQ_DR ----
+12480 IF UDR = 0 THEN PRINT #2, "REQ DR": LET UDR = 1
+12485 RETURN
+12490 REM ---- EMIT_REQ_GR ----
+12495 IF UGR = 0 THEN PRINT #2, "REQ GR": LET UGR = 1
+12500 RETURN
+12505 REM ---- EMIT_REQ_RN ----
+12510 IF URN = 0 THEN PRINT #2, "REQ RN": LET URN = 1
+12515 RETURN
+12520 REM ---- EMIT_REQ_MT ----
+12525 IF UMT = 0 THEN PRINT #2, "REQ MT": LET UMT = 1
+12530 RETURN
+12535 REM ---- EMIT_REQ_XA ----
+12540 IF UXA = 0 THEN PRINT #2, "REQ XA": LET UXA = 1
+12545 RETURN
+12550 REM --- EMIT_GETHOUT_KEEPAX ----
+12555 GOSUB 12160
+12560 GOSUB 12350
+12565 GOSUB 12610
+12570 PRINT #2, "call GETHOUT"
+12575 GOTO 12145
+12580 REM ---- EMIT_LABEL_SKP_Q ----
+12585 PRINT #2, "SKP_"; Q$; ":"
+12590 RETURN
+12595 REM ---- EMIT_REQ_PK ----
+12600 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
+12605 RETURN
+12610 REM ---- EMIT_MOV_AL_FC ----
+12615 PRINT #2, "mov al,"; FC
+12620 RETURN
+12625 REM ---- EMIT_DS_DI_F ----
+12630 PRINT #2, "DS "; F$
+12635 PRINT #2, "mov di,OFFSET S_"; F$
+12640 RETURN
+12645 REM ---- EMIT_DS_SI_D ----
+12650 PRINT #2, "DS "; D$
+12655 PRINT #2, "mov si,OFFSET S_"; D$
+12660 RETURN
+12665 REM ---- PARSE_BINIO: success -> E=1, FC=channel 1..9 ----
+12670 E = 0
+12675 I = INSTR(B$, "#")
+12680 J = INSTR(B$, ",")
+12685 IF I = 0 THEN RETURN
+12690 IF J = 0 THEN RETURN
+12695 FC = VAL(MID$(B$, I + 1, J - I - 1))
+12700 IF FC < 1 THEN RETURN
+12705 IF FC > 9 THEN RETURN
+12710 W$ = R$
+12715 R$ = MID$(B$, J + 1, LEN(B$) - J)
+12720 R$ = LTRIM$(R$)
+12725 IF LEN(R$) = 0 THEN RETURN
+12730 IF LEFT$(R$, 1) <> "," THEN GOTO 12750
+12735 D$ = MID$(R$, 2, LEN(R$) - 1)
+12740 N$ = ""
+12745 GOTO 12785
+12750 E$ = R$
+12755 K = 1
+12760 L = LEN(E$)
+12765 GOSUB 7685
+12770 IF F = 0 THEN D$ = R$: N$ = "": GOTO 12785
+12775 N$ = MID$(R$, 1, F - 1)
+12780 D$ = MID$(R$, F + 1, LEN(R$) - F)
+12785 D$ = TRIM$(D$)
+12790 IF LEN(D$) = 0 THEN RETURN
+12795 GOSUB 11285
+12800 E$ = D$
+12805 D = 1
+12810 GOSUB 6150
+12815 IDTMP$ = L$
+12820 IDTYPE = H
+12825 I = D
+12830 GOSUB 11525
+12835 IF IDTMP$ = "" THEN RETURN
+12840 IF IDTYPE <> 0 THEN RETURN
+12845 IF I > LEN(D$) THEN GOTO 12855
+12850 RETURN
+12855 E = 1
 12860 RETURN
-12870 J = J + 1
-12880 GOTO 12730
-12890 REM ---- find first top-level comma from K to L, result in F ----
-12900 F = 0
-12910 H = 0
-12920 LO = 0
-12930 IF K > L THEN RETURN
-12940 MC = ASC(MID$(E$, K, 1))
-12950 IF MC <> 34 THEN GOTO 12980
-12960 IF LO = 0 THEN LO = 1: GOTO 13060
-12970 LO = 0: GOTO 13060
-12980 IF LO <> 0 THEN GOTO 13060
-12990 IF MC <> 40 THEN GOTO 13010
-13000 H = H + 1: GOTO 13060
-13010 IF MC <> 41 THEN GOTO 13030
-13020 H = H - 1: GOTO 13060
-13030 IF MC <> 44 THEN GOTO 13060
-13040 IF H <> 0 THEN GOTO 13060
-13050 F = K: RETURN
-13060 K = K + 1
-13070 GOTO 12930
-13080 REM ---- compile X$ to SI ----
-13090 GOSUB 25200
-13120 X$ = TRIM$(X$)
-13122 GOSUB 25850
-13124 IF E <> 0 THEN GOTO 13500
-13130 IF LEN(X$) < 2 THEN GOTO 9590
-13200 IF LEFT$(X$, 1) = CHR$(34) THEN GOTO 13680
-13210 IF LEFT$(X$, 5) = "CHR$(" THEN GOTO 13550
-13220 IF LEFT$(X$, 6) = "LEFT$(" THEN I = 6: GOSUB 27250: PRINT #2, "call LEFT": GOTO 27360
-13225 IF LEFT$(X$, 6) = "XGET$(" THEN GOTO 24300
-13230 IF LEFT$(X$, 7) = "RIGHT$(" THEN I = 7: GOSUB 27250: PRINT #2, "call RIGHT": GOTO 27360
-13240 IF LEFT$(X$, 7) = "LTRIM$(" THEN I = 7: GOSUB 27480: PRINT #2, "call LTRIM": GOTO 27540
-13245 IF LEFT$(X$, 6) = "TRIM$(" THEN I = 6: GOSUB 27480: PRINT #2, "REQ TR": PRINT #2, "call TRIM": GOTO 27540
-13250 IF LEFT$(X$, 7) = "RTRIM$(" THEN I = 7: GOSUB 27480: PRINT #2, "call RTRIM": GOTO 27540
-13255 IF LEFT$(X$, 7) = "UCASE$(" THEN I = 7: GOSUB 27480: PRINT #2, "call UCASE": GOTO 27540
-13260 IF LEFT$(X$, 5) = "STR$(" THEN GOTO 15640
-13270 IF LEFT$(X$, 5) = "MID$(" THEN GOTO 13810
-13271 IF X$ <> "DATE$" THEN GOTO 13278
-13272 GOSUB 21830
-13273 GOSUB 24710
-13274 PRINT #2, "call DATES"
-13275 GOSUB 21800
-13276 GOTO 25300
-13278 IF X$ <> "TIME$" THEN GOTO 13281
-13279 GOSUB 21830: GOSUB 24940: PRINT #2, "call TIMESTR": GOSUB 21800
-13280 GOTO 25300
-13281 IF X$ <> "INKEY$" THEN GOTO 13290
-13282 GOSUB 21830
-13283 PRINT #2, "REQ IK"
-13284 PRINT #2, "call INKEYS"
-13285 GOSUB 21800
-13286 GOTO 25300
-13290 IF X$ <> "INPUT$" THEN GOTO 13360
-13300 GOSUB 21830
-13310 GOSUB 21890
-13320 GOSUB 21800
-13330 GOTO 25300
-13360 GOSUB 20620
-13370 E$ = X$: D = 1
-13380 GOSUB 9800
-13390 IDTMP$ = L$
-13400 IDTYPE = H
-13410 I = D
-13420 GOSUB 20800
-13430 IF IDTMP$ = "" THEN GOTO 9590
-13440 IF IDTYPE = 0 THEN GOTO 9590
-13450 IF I > LEN(X$) THEN GOTO 13470
-13460 GOTO 9590
-13470 PRINT #2, "DS "; IDTMP$
-13480 PRINT #2, "mov si,OFFSET S_"; IDTMP$
-13490 GOTO 25300
-13500 REM ---- DEFAULT PATH FOR TOP-LEVEL STRING CONCATENATION ----
-13510 E$ = X$
-13520 GOSUB 16590
-13530 GOTO 25300
-13550 N$ = MID$(X$, 6, LEN(X$) - 6)
-13560 GOSUB 14480
-13570 GOSUB 21640
-13580 GOSUB 21730
-13590 PRINT #2, "mov BYTE PTR [si],1"
-13600 PRINT #2, "mov [si+1],al"
-13610 GOSUB 21730
-13620 GOTO 25300
-13680 L$ = MID$(X$, 2, LEN(X$) - 2)
-13690 GOSUB 920
-13700 PRINT #2, "jmp SVX_"; Q$
-13710 PRINT #2, "SVD_"; Q$; ":"
-13720 GOSUB 970
-13730 PRINT #2, "SVX_"; Q$; ":"
-13740 PRINT #2, "mov si,OFFSET SVD_"; Q$
-13750 GOTO 25300
-13810 REM ---- compile MID$(str,start,len) to SI ----
-13820 GOSUB 21010
-13830 E$ = X$
-13840 I = 5
-13850 GOSUB 12650
-13860 K = 6
-13870 L = J - 1
-13880 GOSUB 12890
-13890 G = F
-13900 IF G = 0 THEN GOTO 9590
-13910 K = G + 1
-13920 L = J - 1
-13930 GOSUB 12890
-13940 H = F
-13950 IF H = 0 THEN GOTO 9590
-13960 X$ = MID$(E$, 6, G - 6)
-13970 N$ = MID$(E$, G + 1, H - G - 1)
-13980 GOSUB 14480
-13990 N$ = MID$(E$, H + 1, J - H - 1)
-14000 GOSUB 14480
-14010 E$ = X$
-14020 GOSUB 16590
-14040 GOSUB 21120
-14050 GOSUB 21930
-14060 GOSUB 21860
-14070 GOSUB 21760
-14080 GOSUB 21960
-14090 GOSUB 21640
-14100 PRINT #2, "xor cx,cx"
-14110 PRINT #2, "mov cl,al"
-14120 GOSUB 21640
-14130 PRINT #2, "xor dx,dx"
-14140 PRINT #2, "mov dl,al"
-14150 GOSUB 21730
-14160 GOSUB 21930
-14170 GOSUB 21860
-14180 GOSUB 22080
-14190 PRINT #2, "call MID"
-14200 GOSUB 21960
-14210 GOSUB 21730
-14220 GOTO 25300
-14250 REM ---- compile Y$ to DI (wrapper around 17450) ----
-14260 X$ = Y$
-14270 PRINT #2, "push si"
-14280 GOSUB 13080
-14290 PRINT #2, "mov di,si"
-14300 PRINT #2, "pop si"
-14310 RETURN
-14320 REM ---- BYTE ARRAY FACTOR A(I) ----
-14330 F$ = L$
-14340 I = U
-14350 GOSUB 12650
-14360 JPAREN = J
-14370 N$ = MID$(E$, I + 1, JPAREN - I - 1)
-14380 GOSUB 14480
-14390 GOSUB 21640
-14400 PRINT #2, "DS "; F$
-14410 PRINT #2, "mov si,OFFSET S_"; F$
-14420 GOSUB 22140
-14430 PRINT #2, "call ARRGETB"
-14440 GOSUB 21670
-14450 D = JPAREN + 1
-14460 GOTO 10020
-14480 REM ---- compile N$ as numeric subexpression ----
-14490 GOSUB 20300
-14500 E$ = N$
-14510 D = 1
-14520 C = 1
-14530 GOSUB 10020
-14540 GOSUB 10860
-14550 GOTO 20450
-15230 REM ---- COMMON COUNTED STRFUN PREAMBLE ----
-15240 REM FOR LEFT/RIGHT: STRING SOURCE IN SI, COUNT ON TOP OF STACK
-15250 GOSUB 21120
-15260 GOSUB 21640
-15270 PRINT #2, "xor cx,cx"
-15280 PRINT #2, "mov cl,al"
-15290 GOSUB 21930
-15300 GOSUB 21860
-15310 GOTO 22080
-15512 REM ---- SIMPLE_STRFUN_ARG: X$=function call, I=position of "(" ----
-15513 GOSUB 21010
-15514 E$ = X$
-15515 GOSUB 12650
-15516 X$ = MID$(E$, I + 1, J - I - 1)
-15517 E$ = X$: GOSUB 16590
-15518 GOSUB 21120: GOSUB 21930: GOSUB 21860: GOSUB 22080: RETURN
-15520 REM ---- SIMPLE_STRFUN_FINISH: TMP2$ to SI, restore STRFUNCTX ----
-15530 GOSUB 21960
-15540 GOSUB 21730
-15550 GOTO 25300
-15640 REM ---- compile STR$(num) to SI ----
-15650 E$ = X$
-15660 I = 5
-15670 GOSUB 12650
-15680 N$ = MID$(E$, 6, J - 6)
-15690 GOSUB 14480
-15700 GOSUB 21640
-15710 GOSUB 21860
-15720 GOSUB 22080: GOSUB 22110
-15730 PRINT #2, "call STRS"
-15740 GOSUB 21730
-15750 GOTO 25300
-15770 REM === MINIMAL STRING LEXER ===
-15780 REM Input: E$ (string expression)
-15790 REM Output: OT = token type, L$ = token value
-15795 REM OT: 0=EOF 1=VAR 2=LIT 3=FUNC 4=INPUT$ 5=INKEY$ 6=DATE$ 7=TIME$ 8=PLUS 9=COMMA 10=LP 11=RP 12=BAD
-15800 REM State: D = position in E$
-15810 IF D > LEN(E$) THEN OT = 0: L$ = "": D = LEN(E$) + 1: RETURN
-15820 MC = ASC(MID$(E$, D, 1))
-15830 REM Skip spaces
-15840 IF MC = 32 THEN D = D + 1: GOTO 15810
-15850 IF MC = 9 THEN D = D + 1: GOTO 15810
-15860 IF MC = 10 THEN D = D + 1: GOTO 15810
-15870 IF MC = 13 THEN D = D + 1: GOTO 15810
-15880 REM String literal
-15890 IF MC = 34 THEN GOTO 16380
-15900 REM String variable (A$..Z$)
-15910 GOSUB 9800
-15920 IF L$ = "" THEN GOTO 16290
-15930 IF L$ = "LEFT" THEN GOTO 16070
-15940 IF L$ = "MID" THEN GOTO 16100
-15950 IF L$ = "RIGHT" THEN GOTO 16160
-15960 IF L$ = "LTRIM" THEN GOTO 16130
-15970 IF L$ = "RTRIM" THEN GOTO 16190
-15975 IF L$ = "TRIM" THEN GOTO 16241
-15980 IF L$ = "CHR" THEN GOTO 16220
-15990 IF L$ = "STR" THEN GOTO 16250
-15995 IF L$ = "XGET" THEN GOTO 16272
-15997 IF L$ = "UCASE" THEN GOTO 16277
-16000 IF H = 0 THEN GOTO 16280
-16005 IF L$ <> "INKEY" THEN GOTO 16015
-16006 IF D > LEN(E$) THEN OT = 5: RETURN
-16007 IF MID$(E$, D, 1) = "(" THEN GOTO 16015
-16008 OT = 5: RETURN
-16015 IF L$ <> "DATE" THEN GOTO 16019
-16016 IF D > LEN(E$) THEN OT = 6: RETURN
-16017 IF MID$(E$, D, 1) = "(" THEN GOTO 16019
-16018 OT = 6: RETURN
-16019 IF L$ <> "TIME" THEN GOTO 16025
-16020 IF D > LEN(E$) THEN OT = 7: RETURN
-16021 IF MID$(E$, D, 1) = "(" THEN GOTO 16025
-16022 OT = 7: RETURN
-16025 IF L$ <> "INPUT" THEN GOTO 16050
-16030 IF D > LEN(E$) THEN OT = 4: RETURN
-16040 IF MID$(E$, D, 1) = "(" THEN GOTO 16050
-16045 OT = 4: RETURN
-16050 IF D > LEN(E$) THEN OT = 1: RETURN
-16060 IF MID$(E$, D, 1) <> "(" THEN OT = 1: RETURN
-16070 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16080 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "LEFT$": RETURN
-16090 OT = 1: RETURN
-16100 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16110 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "MID$": RETURN
-16120 OT = 1: RETURN
-16130 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16140 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "LTRIM$": RETURN
-16150 OT = 1: RETURN
-16160 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16170 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "RIGHT$": RETURN
-16180 OT = 1: RETURN
-16190 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16200 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "RTRIM$": RETURN
-16210 OT = 1: RETURN
-16220 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16230 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "CHR$": RETURN
-16240 OT = 1: RETURN
-16241 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16242 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "TRIM$": RETURN
-16243 OT = 1: RETURN
-16250 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16260 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "STR$": RETURN
-16270 OT = 1: RETURN
-16272 IF MID$(E$, D, 1) = "$" THEN D = D + 1
-16274 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "XGET$": RETURN
-16276 OT = 1: RETURN
-16277 IF H = 0 THEN OT = 1: RETURN
-16278 IF MID$(E$, D, 1) = "(" THEN OT = 3: L$ = "UCASE$": RETURN
-16279 OT = 1: RETURN
-16280 OT = 1: RETURN
-16290 REM Operator +
-16300 IF MC = 43 THEN OT = 8: L$ = "+": D = D + 1: RETURN
-16310 REM Comma
-16320 IF MC = 44 THEN OT = 9: L$ = ",": D = D + 1: RETURN
-16330 REM Parentheses
-16340 IF MC = 40 THEN OT = 10: L$ = "(": D = D + 1: RETURN
-16350 IF MC = 41 THEN OT = 11: L$ = ")": D = D + 1: RETURN
-16360 OT = 12: L$ = CHR$(MC): D = D + 1: RETURN
-16370 REM Quoted string
-16380 REM Scan until closing quote
-16390 J = D + 1
-16400 IF J > LEN(E$) THEN GOTO 9630
-16410 MC = ASC(MID$(E$, J, 1))
-16420 IF MC = 34 THEN GOTO 16440
-16430 J = J + 1: GOTO 16400
-16440 OT = 2
-16450 T = D + 1
-16460 U = J - D - 1
-16470 X$ = MID$(E$, T, U)
-16480 L$ = X$
-16490 D = J + 1
-16500 RETURN
-16580 REM =========================================================
-16590 REM === STRING EXPRESSION PARSER (RESULT IN TMP$, SI) ===
-16600 REM Input : E$ (string expression)
-16610 REM Output: result accumulator TMP$, SI -> TMP$
-16620 REM Independent of assignment (F$)
-16630 GOSUB 20620: REM save STRCTX
-16632 STDEP = STDEP + 1
-16634 IF STDEP > 4 THEN GOTO 9650
-16640 D = 1
-16650 REM --- initialize accumulator ---
-16660 GOSUB 21830
-16670 PRINT #2, "mov BYTE PTR [di],0"
-16680 REM --- parse first term ---
-16690 GOSUB 16940
-16700 IF J$ <> "" THEN GOTO 9660
-16710 REM --- copy first operand into TMP$ ---
-16720 GOSUB 21830
-16730 GOSUB 21760
-16740 REM === handle + chain ===
-16750 GOSUB 15770
-16760 IF OT = 8 THEN GOTO 16790
-16770 REM --- no more terms ---
-16780 GOTO 16900
-16790 REM --- SAVE ACCUMULATOR TMP$ BEFORE NESTED TERM ---
-16791 PRINT #2, "mov si,OFFSET TMP$"
-16792 GOSUB 26020
-16793 GOSUB 21760
-16800 REM --- parse next term ---
-16810 GOSUB 16940
-16820 IF J$ <> "" THEN GOTO 9660
-16830 REM --- SAVE NEW TERM TO TMP2$ ---
-16831 GOSUB 21860
-16832 GOSUB 21760
-16840 REM --- RESTORE OLD ACCUMULATOR FROM TMP3$ TO TMP$ ---
-16841 GOSUB 26080
-16842 GOSUB 21830
-16843 GOSUB 21760
-16850 REM --- APPEND TMP2$ TO TMP$ ---
-16851 GOSUB 21830
-16852 GOSUB 21730
-16853 GOSUB 22080
-16854 PRINT #2, "call STRAPP"
-16855 GOSUB 21800
-16856 GOTO 16740
-16898 REM --- final result ---
-16900 GOSUB 21800
-16910 STDEP = STDEP - 1
-16920 GOSUB 20800: REM restore STRCTX
-16930 RETURN
-16940 REM === parse one string term into SI ===
-16950 REM expects: D at start of term
-16960 GOSUB 15770
-16970 IF OT = 1 THEN GOTO 17030
-16980 IF OT = 2 THEN GOTO 17090
-16990 IF OT = 3 THEN GOTO 17240
-17000 IF OT = 4 THEN GOTO 17180
-17005 IF OT = 5 THEN GOTO 17231
-17006 IF OT = 6 THEN GOTO 17361
-17007 IF OT = 7 THEN GOTO 24960
-17010 GOTO 9590
-17030 REM --- string variable ---
-17040 PRINT #2, "DS "; L$
-17050 PRINT #2, "mov si,OFFSET S_"; L$
-17060 P = 1
-17070 REM D already points to the next character (+ oder end)
-17080 RETURN
-17090 REM --- string literal ---
-17100 GOSUB 920
-17110 PRINT #2, "jmp SLX_"; Q$
-17120 PRINT #2, "SLD_"; Q$; ":"
-17130 GOSUB 970
-17140 PRINT #2, "SLX_"; Q$; ":"
-17150 PRINT #2, "mov si,OFFSET SLD_"; Q$
-17160 P = 1
-17170 RETURN
-17180 REM --- INPUT$ ---
-17190 GOSUB 21830
-17200 GOSUB 21890
-17210 GOSUB 21800
-17220 P = 2
-17230 RETURN
-17231 REM --- INKEY$ ---
-17232 GOSUB 21830
-17233 PRINT #2, "REQ IK"
-17234 PRINT #2, "call INKEYS"
-17235 GOSUB 21800
-17236 P = 2
-17237 RETURN
-17240 REM --- string function ---
-17250 G = D - LEN(L$)
-17260 I = D
-17270 GOSUB 12650
-17280 FNLEV = FNLEV + 1
-17281 IF FNLEV > 4 THEN GOTO 9650
-17282 IF FNLEV = 1 THEN FNE1 = J + 1
-17283 IF FNLEV = 2 THEN FNE2 = J + 1
-17284 IF FNLEV = 3 THEN FNE3 = J + 1
-17285 IF FNLEV = 4 THEN FNE4 = J + 1
-17290 X$ = MID$(E$, G, J - G + 1)
-17292 GOSUB 20620
-17293 GOSUB 25500
-17294 GOSUB 20300
-17310 E$ = X$: D = 1
-17320 GOSUB 13080
-17330 GOSUB 20450
-17336 GOSUB 20800
-17340 IF FNLEV = 1 THEN D = FNE1: FNLEV = 0: GOTO 17350
-17341 IF FNLEV = 2 THEN D = FNE2: FNLEV = 1: GOTO 17350
-17342 IF FNLEV = 3 THEN D = FNE3: FNLEV = 2: GOTO 17350
-17343 IF FNLEV = 4 THEN D = FNE4: FNLEV = 3: GOTO 17350
-17344 GOTO 9650
-17350 P = 2
-17360 RETURN
-17361 REM --- DATE$ ---
-17362 GOSUB 21830
-17363 GOSUB 24710
-17364 PRINT #2, "call DATES"
-17365 GOSUB 21800
-17366 P = 2
-17367 RETURN
-17370 REM ---- PURE STRING LITERAL TEST IN E$ ----
-17380 H = 0
-17390 IF LEN(E$) < 2 THEN RETURN
-17400 IF LEFT$(E$, 1) <> CHR$(34) THEN RETURN
-17410 J = 2
-17420 IF J > LEN(E$) THEN RETURN
-17430 IF MID$(E$, J, 1) = CHR$(34) THEN GOTO 17450
-17440 J = J + 1: GOTO 17420
-17450 I = J + 1
-17460 IF I > LEN(E$) THEN GOTO 17500
-17470 MC = ASC(MID$(E$, I, 1))
-17480 IF MC = 32 OR MC = 9 THEN I = I + 1: GOTO 17460
-17490 RETURN
-17500 H = 1
-17510 L$ = MID$(E$, 2, J - 2)
-17520 RETURN
-17530 REM ---- ASSIGN PURE STRING LITERAL L$ TO SAVED DI ----
-17540 IF LEN(L$) <> 0 THEN GOTO 17570
-17550 GOSUB 21960
-17560 PRINT #2, "mov BYTE PTR [di],0": RETURN
-17570 GOSUB 920
-17580 PRINT #2, "jmp SLA_"; Q$
-17590 PRINT #2, "SLD_"; Q$; ":"
-17600 GOSUB 970: PRINT #2, "SLA_"; Q$; ":": GOSUB 21960: PRINT #2, "mov si,OFFSET SLD_"; Q$: GOSUB 21760: RETURN
-17610 REM ---------------- IF <bool-expr> THEN <stmts> ----------
-17620 I = 4
-17630 O = 0
-17640 P = 0
-17650 IF I > LEN(B$) - 3 THEN GOTO 17750
-17660 MC = ASC(MID$(B$, I, 1))
-17670 IF MC <> 34 THEN GOTO 17700
-17680 IF O = 0 THEN O = 1: GOTO 17740
-17690 O = 0: GOTO 17740
-17700 IF O <> 0 THEN GOTO 17740
-17710 IF MID$(B$, I, 4) <> "THEN" THEN GOTO 17740
-17720 P = I
-17730 GOTO 17750
-17740 I = I + 1: GOTO 17650
-17750 IF P = 0 THEN GOTO 9590
-17760 L$ = MID$(B$, 4, P - 4)
-17770 R$ = MID$(B$, P + 5, LEN(B$) - P - 4)
-17775 R$ = TRIM$(R$)
-17776 IF LEN(R$) = 0 THEN GOTO 23300
-17780 IFELSE = 0
-17790 ELSR$ = ""
-17800 GOSUB 6560
-17810 IF F = 0 THEN GOTO 17890
-17820 IFELSE = 1
-17830 ELSR$ = MID$(R$, F + 4, LEN(R$) - F - 3)
-17840 R$ = MID$(R$, 1, F - 1)
-17850 R$ = RTRIM$(R$)
-17860 IF RIGHT$(R$, 1) <> ":" THEN GOTO 17880
-17870 R$ = LEFT$(R$, LEN(R$) - 1)
-17880 ELSR$ = LTRIM$(ELSR$)
-17890 GOSUB 920
-17900 IFSKP = V
-17910 IF IFELSE = 0 THEN GOTO 17940
-17920 GOSUB 920
-17930 IFENDP = V
-17940 GOSUB 920
-17950 I$ = Q$
-17960 GOSUB 17990
-17970 PRINT #2, "THN_"; I$; ":"
-17980 GOTO 7520
-17990 REM ---- compile boolean expression in L$ as OR chain ----
-18000 GOSUB 18160
-18010 IF F = 0 THEN GOTO 18100
-18020 B$ = MID$(L$, 1, F - 1)
-18030 F$ = MID$(L$, F + 4, LEN(L$) - F - 3)
-18040 GOSUB 920
-18050 K$ = Q$
-18060 GOSUB 18580
-18070 PRINT #2, "SKP_"; K$; ":"
-18080 L$ = F$
-18090 GOTO 18000
-18100 B$ = L$
-18110 V = IFSKP
-18120 GOSUB 1070
-18130 K$ = Q$
-18140 GOTO 18580
-18160 REM ---- find first top-level " OR " in L$, result in F ----
-18170 F = 0
-18180 H = 0
-18190 O = 0
-18200 I = 1
-18210 IF I > LEN(L$) - 3 THEN RETURN
-18220 MC = ASC(MID$(L$, I, 1))
-18230 IF MC <> 34 THEN GOTO 18260
-18240 IF O = 0 THEN O = 1: GOTO 18350
-18250 O = 0: GOTO 18350
-18260 IF O <> 0 THEN GOTO 18350
-18270 IF MC <> 40 THEN GOTO 18290
-18280 H = H + 1: GOTO 18350
-18290 IF MC <> 41 THEN GOTO 18310
-18300 H = H - 1: GOTO 18350
-18310 IF H <> 0 THEN GOTO 18350
-18320 IF MID$(L$, I, 4) <> " OR " THEN GOTO 18350
-18330 F = I
-18340 RETURN
-18350 I = I + 1
-18360 GOTO 18210
-18370 REM ---- find first top-level " AND " in B$, result in F ----
-18380 F = 0
-18390 H = 0
-18400 O = 0
-18410 I = 1
-18420 IF I > LEN(B$) - 4 THEN RETURN
-18430 MC = ASC(MID$(B$, I, 1))
-18440 IF MC <> 34 THEN GOTO 18470
-18450 IF O = 0 THEN O = 1: GOTO 18560
-18460 O = 0: GOTO 18560
-18470 IF O <> 0 THEN GOTO 18560
-18480 IF MC <> 40 THEN GOTO 18500
-18490 H = H + 1: GOTO 18560
-18500 IF MC <> 41 THEN GOTO 18520
-18510 H = H - 1: GOTO 18560
-18520 IF H <> 0 THEN GOTO 18560
-18530 IF MID$(B$, I, 5) <> " AND " THEN GOTO 18560
-18540 F = I
-18550 RETURN
-18560 I = I + 1
-18570 GOTO 18420
-18580 REM ---- compile AND group in B$; FALSE -> SKP_K$, TRUE -> THN_I$ ----
-18590 GOSUB 18370
-18600 IF F = 0 THEN GOTO 18660
-18610 A$ = MID$(B$, 1, F - 1)
-18620 W$ = MID$(B$, F + 5, LEN(B$) - F - 4)
-18630 GOSUB 18700
-18640 B$ = W$
-18650 GOTO 18590
-18660 A$ = B$
-18670 GOSUB 18700
-18680 PRINT #2, "jmp THN_"; I$
-18690 RETURN
-18700 REM ---- compile IF atom in A$; FALSE -> SKP_K$ ----
-18710 IFNEG = 0
-18720 GOSUB 19740
-18730 IF LEFT$(A$, 4) <> "NOT " THEN GOTO 18770
-18740 IFNEG = 1
-18750 A$ = MID$(A$, 5, LEN(A$) - 4)
-18760 GOSUB 19740
-18770 OPC = 0
-18780 J = 1
-18790 O = 0
-18800 H = 0
-18810 IF J > LEN(A$) THEN GOTO 19380
-18820 MC = ASC(MID$(A$, J, 1))
-18830 IF MC <> 34 THEN GOTO 18860
-18840 IF O = 0 THEN O = 1: GOTO 19040
-18850 O = 0: GOTO 19040
-18860 IF O <> 0 THEN GOTO 19040
-18870 IF MC <> 40 THEN GOTO 18890
-18880 H = H + 1: GOTO 19040
-18890 IF MC <> 41 THEN GOTO 18910
-18900 H = H - 1: GOTO 19040
-18910 IF H <> 0 THEN GOTO 19040
-18920 IF MID$(A$, J, 2) <> "<>" THEN GOTO 18940
-18930 OPC = 4: H = 2: GOTO 19050
-18940 IF MID$(A$, J, 2) <> "<=" THEN GOTO 18960
-18950 OPC = 5: H = 2: GOTO 19050
-18960 IF MID$(A$, J, 2) <> ">=" THEN GOTO 18980
-18970 OPC = 6: H = 2: GOTO 19050
-18980 IF MC <> 61 THEN GOTO 19000
-18990 OPC = 1: H = 1: GOTO 19050
-19000 IF MC <> 60 THEN GOTO 19020
-19010 OPC = 2: H = 1: GOTO 19050
-19020 IF MC <> 62 THEN GOTO 19040
-19030 OPC = 3: H = 1: GOTO 19050
-19040 J = J + 1: GOTO 18810
-19050 OL$ = A$
-19060 CMBEG = J + H
-19070 CMLEN = LEN(OL$) - CMBEG + 1
-19080 B$ = MID$(OL$, CMBEG, CMLEN)
-19090 A$ = MID$(OL$, 1, J - 1)
-19100 GOSUB 19740
-19110 GOSUB 19780
-19120 IF E <> 0 THEN GOTO 19270
-19130 X$ = A$
-19140 A$ = B$
-19150 GOSUB 19780
-19160 A$ = X$
-19170 IF E <> 0 THEN GOTO 19270
-19180 E$ = A$: D = 1: C = 1
-19190 GOSUB 10020: GOSUB 10860
-19200 E$ = B$: D = 1: C = 1
-19210 GOSUB 10020: GOSUB 10860
-19220 GOSUB 21700
-19230 GOSUB 21640
-19240 PRINT #2, "cmp ax,bx"
-19250 GOTO 19450
-19270 X$ = A$: Y$ = B$
-19280 GOSUB 13080
-19290 PRINT #2, "mov di,OFFSET TMP3$"
-19300 GOSUB 21760
-19310 GOSUB 14250
-19320 PRINT #2, "mov si,OFFSET TMP3$"
-19330 GOSUB 22080
-19340 PRINT #2, "call STRCMP"
-19350 PRINT #2, "cmp al,0"
-19360 GOTO 19450
-19380 REM ---- bare numeric truth expression ----
-19390 E$ = A$: D = 1: C = 1
-19400 GOSUB 10020: GOSUB 10860
-19410 GOSUB 21640
-19420 PRINT #2, "cmp ax,0"
-19430 IF IFNEG = 0 THEN PRINT #2, "je SKP_"; K$: RETURN
-19440 PRINT #2, "jne SKP_"; K$: RETURN
-19450 REM ---- EMIT JUMP TO SKP_K$ (NORMAL OR NOT) ----
-19460 IF OPC <> 1 THEN GOTO 19500
-19470 IF IFNEG <> 0 THEN GOTO 19490
-19480 PRINT #2, "jne SKP_"; K$: RETURN
-19490 PRINT #2, "je SKP_"; K$: RETURN
-19500 IF OPC <> 2 THEN GOTO 19540
-19510 IF IFNEG <> 0 THEN GOTO 19530
-19520 PRINT #2, "jge SKP_"; K$: RETURN
-19530 PRINT #2, "jl SKP_"; K$: RETURN
-19540 IF OPC <> 3 THEN GOTO 19580
-19550 IF IFNEG <> 0 THEN GOTO 19570
-19560 PRINT #2, "jle SKP_"; K$: RETURN
-19570 PRINT #2, "jg SKP_"; K$: RETURN
-19580 IF OPC <> 4 THEN GOTO 19620
-19590 IF IFNEG <> 0 THEN GOTO 19610
-19600 PRINT #2, "je SKP_"; K$: RETURN
-19610 PRINT #2, "jne SKP_"; K$: RETURN
-19620 IF OPC <> 5 THEN GOTO 19660
-19630 IF IFNEG <> 0 THEN GOTO 19650
-19640 PRINT #2, "jg SKP_"; K$: RETURN
-19650 PRINT #2, "jle SKP_"; K$: RETURN
-19660 IF OPC <> 6 THEN GOTO 19700
-19670 IF IFNEG <> 0 THEN GOTO 19690
-19680 PRINT #2, "jl SKP_"; K$: RETURN
-19690 PRINT #2, "jge SKP_"; K$: RETURN
-19700 GOTO 9590
-19740 REM ---- trim A$ and B$ for boolean IF atom ----
-19750 A$ = TRIM$(A$)
-19760 B$ = TRIM$(B$)
-19770 RETURN
-19780 REM ---- check whether A$ is a string expression, result in E ----
-19790 E = 0
-19800 IF LEN(A$) = 0 THEN RETURN
-19810 REM --- strip one outer parenthesis layer if fully enclosing ---
-19820 IF LEFT$(A$, 1) <> "(" THEN GOTO 19890
-19830 GOSUB 20620
-19840 E$ = A$: I = 1
-19850 GOSUB 12650
-19860 IF J <> LEN(A$) THEN GOTO 19880
-19870 GOSUB 20800: A$ = MID$(A$, 2, LEN(A$) - 2): GOTO 19790
-19880 GOSUB 20800
-19890 REM --- direct string forms ---
-19900 IF LEFT$(A$, 1) = CHR$(34) THEN E = 1: RETURN
-19910 IF LEFT$(A$, 6) = "LEFT$(" THEN E = 1: RETURN
-19920 IF LEFT$(A$, 5) = "MID$(" THEN E = 1: RETURN
-19930 IF LEFT$(A$, 7) = "LTRIM$(" THEN E = 1: RETURN
-19940 IF LEFT$(A$, 7) = "RIGHT$(" THEN E = 1: RETURN
-19950 IF LEFT$(A$, 7) = "RTRIM$(" THEN E = 1: RETURN
-19955 IF LEFT$(A$, 6) = "TRIM$(" THEN E = 1: RETURN
-19960 IF LEFT$(A$, 5) = "CHR$(" THEN E = 1: RETURN
-19970 IF LEFT$(A$, 5) = "STR$(" THEN E = 1: RETURN
-19975 IF LEFT$(A$, 6) = "XGET$(" THEN E = 1: RETURN
-19976 IF LEFT$(A$, 7) = "UCASE$(" THEN E = 1: RETURN
-19977 IF A$ = "DATE$" THEN E = 1: RETURN
-19978 IF A$ = "TIME$" THEN E = 1: RETURN
-19979 IF A$ = "INKEY$" THEN E = 1: RETURN
-19980 IF A$ = "INPUT$" THEN E = 1: RETURN
-19990 REM --- check string identifier X$ ---
-20000 GOSUB 20620
-20010 E$ = A$: D = 1
-20020 GOSUB 9800
-20030 IDTMP$ = L$
-20040 IDTYPE = H
-20050 GOSUB 20800
-20060 IF IDTMP$ = "" THEN RETURN
-20070 IF IDTYPE = 0 THEN RETURN
-20080 E = 1
-20090 RETURN
-20100 REM ---- PUSH_EXPRC ----
-20110 ECTX = ECTX + 1
-20120 IF ECTX > 4 THEN GOTO 9650
-20130 IF ECTX <> 1 THEN GOTO 20150
-20140 EC1 = C: RETURN
-20150 IF ECTX <> 2 THEN GOTO 20170
-20160 EC2 = C: RETURN
-20170 IF ECTX <> 3 THEN GOTO 20190
-20180 EC3 = C: RETURN
-20190 EC4 = C
-20200 RETURN
-20210 REM ---- POP_EXPRC ----
-20220 IF ECTX <> 1 THEN GOTO 20240
-20230 C = EC1: ECTX = 0: RETURN
-20240 IF ECTX <> 2 THEN GOTO 20260
-20250 C = EC2: ECTX = 1: RETURN
-20260 IF ECTX <> 3 THEN GOTO 20280
-20270 C = EC3: ECTX = 2: RETURN
-20280 C = EC4: ECTX = 3
-20290 RETURN
-20300 REM ---- PUSH_NUMCTX ----
-20310 NCTX = NCTX + 1
-20320 IF NCTX > 4 THEN GOTO 9650
-20330 IF NCTX <> 1 THEN GOTO 20360
-20340 XSET XC,1,E$
-20341 ND1 = D: NC1 = C: NK1 = TK
-20350 NJ1 = J: NH1 = H: NP1 = JPAREN: RETURN
-20360 IF NCTX <> 2 THEN GOTO 20390
-20370 XSET XC,2,E$
-20371 ND2 = D: NC2 = C: NK2 = TK
-20380 NJ2 = J: NH2 = H: NP2 = JPAREN: RETURN
-20390 IF NCTX <> 3 THEN GOTO 20420
-20400 XSET XC,3,E$
-20401 ND3 = D: NC3 = C: NK3 = TK
-20410 NJ3 = J: NH3 = H: NP3 = JPAREN: RETURN
-20420 XSET XC,4,E$
-20421 ND4 = D: NC4 = C: NK4 = TK
-20430 NJ4 = J: NH4 = H: NP4 = JPAREN
-20440 RETURN
-20450 REM ---- POP_NUMCTX ----
-20460 IF NCTX <> 1 THEN GOTO 20500
-20470 E$ = XGET$(XC,1)
-20471 D = ND1: C = NC1: TK = NK1
-20480 J = NJ1: H = NH1: JPAREN = NP1
-20490 NCTX = 0: RETURN
-20500 IF NCTX <> 2 THEN GOTO 20540
-20510 E$ = XGET$(XC,2)
-20511 D = ND2: C = NC2: TK = NK2
-20520 J = NJ2: H = NH2: JPAREN = NP2
-20530 NCTX = 1: RETURN
-20540 IF NCTX <> 3 THEN GOTO 20580
-20550 E$ = XGET$(XC,3)
-20551 D = ND3: C = NC3: TK = NK3
-20560 J = NJ3: H = NH3: JPAREN = NP3
-20570 NCTX = 2: RETURN
-20580 E$ = XGET$(XC,4)
-20581 D = ND4: C = NC4: TK = NK4
-20590 J = NJ4: H = NH4: JPAREN = NP4
-20600 NCTX = 3
-20610 RETURN
-20620 REM ---- PUSH_STRCTX ----
-20630 SCTX = SCTX + 1
-20635 IF SCTX > 8 THEN GOTO 9650
-20640 IF SCTX <> 1 THEN GOTO 20680
-20650 XSET XC,5,E$
-20651 SD1 = D: SC1 = C: ST1 = TK
-20660 SJ1$ = J$
-20662 XSET XC,13,L$
-20670 SJN1 = J: SH1 = H: SP1 = P
-20671 XSET XC,17,X$
-20672 RETURN
-20680 IF SCTX <> 2 THEN GOTO 20720
-20690 XSET XC,6,E$
-20691 SD2 = D: SC2 = C: ST2 = TK
-20700 SJ2$ = J$
-20702 XSET XC,14,L$
-20710 SJN2 = J: SH2 = H: SP2 = P
-20711 XSET XC,18,X$
-20712 RETURN
-20720 IF SCTX <> 3 THEN GOTO 20760
-20730 XSET XC,7,E$
-20731 SD3 = D: SC3 = C: ST3 = TK
-20740 SJ3$ = J$
-20742 XSET XC,15,L$
-20750 SJN3 = J: SH3 = H: SP3 = P
-20751 XSET XC,19,X$
-20752 RETURN
-20760 IF SCTX <> 4 THEN GOTO 20776
-20761 XSET XC,8,E$
-20762 SD4 = D: SC4 = C: ST4 = TK
-20770 SJ4$ = J$
-20772 XSET XC,16,L$
-20773 SJN4 = J: SH4 = H: SP4 = P
-20774 XSET XC,20,X$
-20775 RETURN
-20776 IF SCTX <> 5 THEN GOTO 20783
-20777 XSET XC,27,E$
-20778 SD5 = D: SC5 = C: ST5 = TK: SJ5$ = J$
-20779 XSET XC,29,L$
-20780 SJN5 = J: SH5 = H: SP5 = P
-20781 XSET XC,31,X$
-20782 RETURN
-20783 IF SCTX <> 6 THEN GOTO 20790
-20784 XSET XC,28,E$: SD6 = D: SC6 = C: ST6 = TK: SJ6$ = J$
-20785 XSET XC,30,L$
-20786 SJN6 = J: SH6 = H: SP6 = P
-20788 XSET XC,32,X$
-20789 RETURN
-20790 IF SCTX <> 7 THEN GOTO 20797
-20791 XSET XC,33,E$
-20792 SD7 = D: SC7 = C: ST7 = TK: SJ7$ = J$
-20793 XSET XC,35,L$
-20794 SJN7 = J: SH7 = H: SP7 = P
-20795 XSET XC,37,X$
-20796 RETURN
-20797 XSET XC,34,E$: SD8 = D: SC8 = C: ST8 = TK: SJ8$ = J$
-20798 XSET XC,36,L$: SJN8 = J: SH8 = H: SP8 = P
-20799 XSET XC,38,X$: RETURN
-20800 REM ---- POP_STRCTX ----
-20805 IF SCTX = 0 THEN GOTO 9650
-20810 IF SCTX <> 1 THEN GOTO 20860
-20820 E$ = XGET$(XC,5)
-20821 D = SD1: C = SC1: TK = ST1
-20830 J$ = SJ1$
-20832 L$ = XGET$(XC,13)
-20840 J = SJN1: H = SH1: P = SP1
-20842 X$ = XGET$(XC,17)
-20850 SCTX = 0: RETURN
-20860 IF SCTX <> 2 THEN GOTO 20910
-20870 E$ = XGET$(XC,6)
-20871 D = SD2: C = SC2: TK = ST2
-20880 J$ = SJ2$
-20882 L$ = XGET$(XC,14)
-20890 J = SJN2: H = SH2: P = SP2
-20891 X$ = XGET$(XC,18)
-20900 SCTX = 1: RETURN
-20910 IF SCTX <> 3 THEN GOTO 20960
-20920 E$ = XGET$(XC,7)
-20921 D = SD3: C = SC3: TK = ST3
-20930 J$ = SJ3$
-20932 L$ = XGET$(XC,15)
-20940 J = SJN3: H = SH3: P = SP3
-20941 X$ = XGET$(XC,19)
-20950 SCTX = 2: RETURN
-20960 IF SCTX <> 4 THEN GOTO 20983
-20961 E$ = XGET$(XC,8)
-20962 D = SD4: C = SC4: TK = ST4
-20970 J$ = SJ4$
-20972 L$ = XGET$(XC,16)
-20980 J = SJN4: H = SH4: P = SP4
-20981 X$ = XGET$(XC,20)
-20982 SCTX = 3: RETURN
-20983 IF SCTX <> 5 THEN GOTO 20990
-20984 E$ = XGET$(XC,27)
-20985 D = SD5: C = SC5: TK = ST5: J$ = SJ5$
-20986 L$ = XGET$(XC,29)
-20987 J = SJN5: H = SH5: P = SP5
-20988 X$ = XGET$(XC,31)
-20989 SCTX = 4: RETURN
-20990 IF SCTX <> 6 THEN GOTO 20996
-20991 E$ = XGET$(XC,28)
-20992 D = SD6: C = SC6: TK = ST6: J$ = SJ6$
-20993 L$ = XGET$(XC,30)
-20994 J = SJN6: H = SH6: P = SP6
-20995 X$ = XGET$(XC,32): SCTX = 5: RETURN
-20996 IF SCTX <> 7 THEN GOTO 21002
-20997 E$ = XGET$(XC,33)
-20998 D = SD7: C = SC7: TK = ST7: J$ = SJ7$
-20999 L$ = XGET$(XC,35)
-21000 J = SJN7: H = SH7: P = SP7
-21001 X$ = XGET$(XC,37): SCTX = 6: RETURN
-21002 E$ = XGET$(XC,34)
-21003 D = SD8: C = SC8: TK = ST8: J$ = SJ8$
-21004 L$ = XGET$(XC,36)
-21005 J = SJN8: H = SH8: P = SP8
-21006 X$ = XGET$(XC,38): SCTX = 7
-21007 RETURN
-21010 REM ---- PUSH_SRCCTX ----
-21020 SRCCTX = SRCCTX + 1
-21030 IF SRCCTX > 4 THEN GOTO 9650
-21040 IF SRCCTX <> 1 THEN GOTO 21060
-21050 XSET XC,21,E$
-21051 SRJ1 = J: SRH1 = H: SRO1 = O: RETURN
-21060 IF SRCCTX <> 2 THEN GOTO 21080
-21070 XSET XC,22,E$
-21071 SRJ2 = J: SRH2 = H: SRO2 = O: RETURN
-21080 IF SRCCTX <> 3 THEN GOTO 21100
-21090 XSET XC,23,E$
-21091 SRJ3 = J: SRH3 = H: SRO3 = O: RETURN
-21100 XSET XC,24,E$
-21101 SRJ4 = J: SRH4 = H: SRO4 = O
-21110 RETURN
-21120 REM ---- POP_SRCCTX ----
-21130 IF SRCCTX = 0 THEN GOTO 9650
-21140 IF SRCCTX <> 1 THEN GOTO 21170
-21150 E$ = XGET$(XC,21)
-21151 J = SRJ1: H = SRH1: O = SRO1
-21160 SRCCTX = 0: RETURN
-21170 IF SRCCTX <> 2 THEN GOTO 21200
-21180 E$ = XGET$(XC,22)
-21181 J = SRJ2: H = SRH2: O = SRO2
-21190 SRCCTX = 1: RETURN
-21200 IF SRCCTX <> 3 THEN GOTO 21230
-21210 E$ = XGET$(XC,23)
-21211 J = SRJ3: H = SRH3: O = SRO3
-21220 SRCCTX = 2: RETURN
-21230 E$ = XGET$(XC,24)
-21231 J = SRJ4: H = SRH4: O = SRO4
-21240 SRCCTX = 3
-21250 RETURN
-21260 REM ---- PUSH_THENI ----
-21270 TICTX = TICTX + 1
-21280 IF TICTX > 2 THEN GOTO 9650
-21290 IF TICTX <> 1 THEN GOTO 21310
-21300 TSK1 = IFSKP
-21301 XSET XC,25,ELSR$
-21302 TEND1 = IFENDP: TEL1 = IFELSE: RETURN
-21310 TSK2 = IFSKP
-21311 XSET XC,26,ELSR$
-21312 TEND2 = IFENDP: TEL2 = IFELSE: RETURN
-21320 REM ---- POP_THENI ----
-21330 IF TICTX = 0 THEN GOTO 9650
-21340 IF TICTX <> 1 THEN GOTO 21360
-21350 IFSKP = TSK1
-21351 ELSR$ = XGET$(XC,25)
-21352 IFENDP = TEND1: IFELSE = TEL1: TICTX = 0: RETURN
-21360 IFSKP = TSK2
-21361 ELSR$ = XGET$(XC,26)
-21362 IFENDP = TEND2: IFELSE = TEL2: TICTX = 1: RETURN
-21370 REM ---- tie uppercasing to QUBMODE ----
-21380 IF QUBMODE = 0 THEN GOTO 21450
-21390 IF QUBMODE = 1 THEN GOTO 21410
-21400 IF VAL(A$) <> 0 THEN GOTO 21450
-21410 UCOUT$ = ""
-21420 UCO = 0
-21430 UCI = 1
-21440 GOTO 21500
-21450 UCQ = INSTR(A$, " ")
-21460 IF UCQ = 0 THEN RETURN
-21470 UCOUT$ = LEFT$(A$, UCQ)
-21480 UCO = 0
-21490 UCI = UCQ + 1
-21500 IF UCI > LEN(A$) THEN GOTO 21620
-21510 UCCH = ASC(MID$(A$, UCI, 1))
-21520 IF UCCH <> 34 THEN GOTO 21550
-21530 IF UCO = 0 THEN UCO = 1: GOTO 21590
-21540 UCO = 0: GOTO 21590
-21550 IF UCO <> 0 THEN GOTO 21590
-21560 IF UCCH < 97 THEN GOTO 21590
-21570 IF UCCH > 122 THEN GOTO 21590
-21580 UCCH = UCCH - 32
-21590 UCOUT$ = UCOUT$ + CHR$(UCCH)
-21600 UCI = UCI + 1
-21610 GOTO 21500
-21620 A$ = UCOUT$
-21630 RETURN
-21640 REM ---- EMIT_POPAX ----
-21650 PRINT #2, "pop ax"
-21660 RETURN
-21670 REM ---- EMIT_PUSHAX ----
-21680 PRINT #2, "push ax"
-21690 RETURN
-21700 REM ---- EMIT_POPBX ----
-21710 PRINT #2, "pop bx"
-21720 RETURN
-21730 REM ---- EMIT_SI_TMP2 ----
-21740 PRINT #2, "mov si,OFFSET TMP2$"
-21750 RETURN
-21760 REM ---- EMIT_STRCOPY ----
-21770 GOSUB 22080
-21780 PRINT #2, "call STRCPY"
-21790 RETURN
-21800 REM ---- EMIT_SI_TMP ----
-21810 PRINT #2, "mov si,OFFSET TMP$"
-21820 RETURN
-21830 REM ---- EMIT_DI_TMP ----
-21840 PRINT #2, "mov di,OFFSET TMP$"
-21850 RETURN
-21860 REM ---- EMIT_DI_TMP2 ----
-21870 PRINT #2, "mov di,OFFSET TMP2$"
-21880 RETURN
-21890 REM ---- EMIT_INPUTS ----
-21900 GOSUB 22020
-21910 PRINT #2, "call INPUTS"
-21920 RETURN
-21930 REM ---- EMIT_PUSHDI ----
-21940 PRINT #2, "push di"
-21950 RETURN
-21960 REM ---- EMIT_POPDI ----
-21970 PRINT #2, "pop di"
-21980 RETURN
-21990 REM ---- EMIT_REQ_PR ----
-22000 IF UPR = 0 THEN PRINT #2, "REQ PR": LET UPR = 1
-22010 RETURN
-22020 REM ---- EMIT_REQ_IN ----
-22030 IF UIN = 0 THEN PRINT #2, "REQ IN": LET UIN = 1
-22040 RETURN
-22050 REM ---- EMIT_REQ_FI ----
-22060 IF UFI = 0 THEN PRINT #2, "REQ FI": LET UFI = 1
-22070 RETURN
-22080 REM ---- EMIT_REQ_ST ----
-22090 IF UST = 0 THEN PRINT #2, "REQ ST": LET UST = 1
-22100 RETURN
-22110 REM ---- EMIT_REQ_CV ----
-22120 IF UCV = 0 THEN PRINT #2, "REQ CV": LET UCV = 1
-22130 RETURN
-22140 REM ---- EMIT_REQ_AR ----
-22150 IF UAR = 0 THEN PRINT #2, "REQ AR": LET UAR = 1
-22160 RETURN
-22170 REM ---- EMIT_NB_ASCIIZ_FROM_SI ----
-22180 PRINT #2, "mov di,OFFSET NB"
-22190 GOSUB 21760
-22200 PRINT #2, "xor bx,bx"
-22210 PRINT #2, "mov bl,[NB]"
-22220 PRINT #2, "mov BYTE PTR [NB+bx+1],0"
-22230 PRINT #2, "mov dx,OFFSET NB+1": RETURN
-22240 REM ---- EMIT_REQ_BI ----
-22250 IF UBI = 0 THEN PRINT #2, "REQ BI": LET UBI = 1
-22260 RETURN
-22291 REM ---- EMIT_REQ_RN ----
-22292 IF URN = 0 THEN PRINT #2, "REQ RN": LET URN = 1
-22293 RETURN
-22294 REM ---- EMIT_REQ_MT ----
-22295 IF UMT = 0 THEN PRINT #2, "REQ MT": LET UMT = 1
-22296 RETURN
-22297 REM ---- EMIT_REQ_XA ----
-22298 IF UXA = 0 THEN PRINT #2, "REQ XA": LET UXA = 1
-22299 RETURN
-22300 REM --- EMIT_GETHOUT_KEEPAX ----
-22310 GOSUB 21670
-22320 GOSUB 22050
-22330 PRINT #2, "mov al,"; FC
-22340 PRINT #2, "call GETHOUT"
-22350 GOTO 21640
-22370 REM ---- PARSE_BINIO: success -> E=1, FC=channel 1..9 ----
-22380 E = 0
-22390 I = INSTR(B$, "#")
-22400 J = INSTR(B$, ",")
-22410 IF I = 0 THEN RETURN
-22420 IF J = 0 THEN RETURN
-22430 FC = VAL(MID$(B$, I + 1, J - I - 1))
-22440 IF FC < 1 THEN RETURN
-22450 IF FC > 9 THEN RETURN
-22460 W$ = R$
-22470 R$ = MID$(B$, J + 1, LEN(B$) - J)
-22480 R$ = LTRIM$(R$)
-22490 IF LEN(R$) = 0 THEN RETURN
-22500 IF LEFT$(R$, 1) <> "," THEN GOTO 22540
-22510 D$ = MID$(R$, 2, LEN(R$) - 1)
-22520 N$ = ""
-22530 GOTO 22610
-22540 E$ = R$
-22550 K = 1
-22560 L = LEN(E$)
-22570 GOSUB 12890
-22580 IF F = 0 THEN D$ = R$: N$ = "": GOTO 22610
-22590 N$ = MID$(R$, 1, F - 1)
-22600 D$ = MID$(R$, F + 1, LEN(R$) - F)
-22610 D$ = TRIM$(D$)
-22620 IF LEN(D$) = 0 THEN RETURN
-22630 GOSUB 20620
-22640 E$ = D$
-22650 D = 1
-22660 GOSUB 9800
-22670 IDTMP$ = L$
-22680 IDTYPE = H
-22690 I = D
-22700 GOSUB 20800
-22710 IF IDTMP$ = "" THEN RETURN
-22720 IF IDTYPE <> 0 THEN RETURN
-22730 IF I > LEN(D$) THEN GOTO 22750
-22740 RETURN
-22750 E = 1
-22760 RETURN
-22770 REM ---- QB label line? A$ = IDENT: -> E=1, L$=IDENT ----
-22780 E = 0
-22790 IF LEN(A$) < 2 THEN RETURN
-22800 IF RIGHT$(A$, 1) <> ":" THEN RETURN
-22810 E$ = LEFT$(A$, LEN(A$) - 1)
-22820 D = 1
-22830 GOSUB 9800
-22840 IF L$ = "" THEN RETURN
-22850 IF H <> 0 THEN RETURN
-22860 IF D <= LEN(E$) THEN RETURN
-22870 E = 1
-22880 RETURN
-22890 REM ---------------- GET ---------------------
-22900 GOSUB 22370
-22910 IF E = 0 THEN GOTO 9590
-22920 IF LEN(N$) = 0 THEN GOTO 23000
-22930 GOSUB 14480
-22940 GOSUB 22240
-22950 GOSUB 22050
-22960 PRINT #2, "mov al,"; FC
-22970 PRINT #2, "call GETHIN"
-22980 GOSUB 21640
-22990 PRINT #2, "call SEEK_BYTEH"
-23000 GOSUB 22240
-23010 GOSUB 22050
-23020 PRINT #2, "mov al,"; FC
-23030 PRINT #2, "call GETHIN"
-23040 PRINT #2, "call READ_BYTEH"
-23050 PRINT #2, "DN "; IDTMP$
-23060 PRINT #2, "mov [N_"; IDTMP$; "],ax"
-23070 R$ = W$
-23080 GOTO 1760
-23090 REM ---------------- PUT ---------------------
-23100 GOSUB 22370
-23110 IF E = 0 THEN GOTO 9590
-23120 IF LEN(N$) = 0 THEN GOTO 23200
-23130 GOSUB 14480
-23140 GOSUB 22240
-23150 GOSUB 22050
-23160 PRINT #2, "mov al,"; FC
-23170 PRINT #2, "call GETHOUT"
-23180 GOSUB 21640
-23190 PRINT #2, "call SEEK_BYTEH"
-23200 GOSUB 22240
-23210 PRINT #2, "DN "; IDTMP$
-23220 PRINT #2, "mov ax,[N_"; IDTMP$; "]"
-23230 GOSUB 22300
-23240 PRINT #2, "call WRITE_BYTEH"
-23250 R$ = W$
-23260 GOTO 1760
-23270 REM ---- real BASIC end at the very end of the file ----
-23280 END
-23300 REM ---------- BLOCK IF BEGIN ----------
-23305 IF DPMODE <> 0 THEN GOTO 9590
-23310 IF IFLVL < 4 THEN GOTO 23320
-23315 GOTO 9656
-23320 GOSUB 920
-23325 CURIFN = V
-23330 GOSUB 920
-23335 CURIFE = V
-23340 GOSUB 920
-23345 I$ = Q$
-23350 IFSKP = CURIFN
-23355 GOSUB 17990
-23360 PRINT #2, "THN_"; I$; ":"
-23365 IFLVL = IFLVL + 1
-23370 IF IFLVL = 1 THEN IFN1 = CURIFN: IFE1 = CURIFE: IFS1 = 0: GOTO 1760
-23375 IF IFLVL = 2 THEN IFN2 = CURIFN: IFE2 = CURIFE: IFS2 = 0: GOTO 1760
-23380 IF IFLVL = 3 THEN IFN3 = CURIFN: IFE3 = CURIFE: IFS3 = 0: GOTO 1760
-23385 IFN4 = CURIFN: IFE4 = CURIFE: IFS4 = 0
-23390 GOTO 1760
-23400 REM ---------- BLOCK ELSEIF ----------
-23405 IF DPMODE <> 0 THEN GOTO 9590
-23410 IF IFLVL > 0 THEN GOTO 23420
-23415 GOTO 9656
-23420 GOSUB 23700
-23425 IF CURIFS = 0 THEN GOTO 23435
-23430 GOTO 9656
-23435 I = 8
-23440 O = 0
-23445 IF I > LEN(B$) - 3 THEN GOTO 9590
-23450 MC = ASC(MID$(B$, I, 1))
-23455 IF MC <> 34 THEN GOTO 23465
-23460 IF O = 0 THEN O = 1 ELSE O = 0
-23462 GOTO 23480
-23465 IF O <> 0 THEN GOTO 23480
-23470 IF MID$(B$, I, 4) = "THEN" THEN GOTO 23490
-23480 I = I + 1
-23485 GOTO 23445
-23490 L$ = MID$(B$, 8, I - 8)
-23491 R$ = MID$(B$, I + 5, LEN(B$) - I - 4)
-23492 R$ = TRIM$(R$)
-23493 IF LEN(R$) <> 0 THEN GOTO 9590
-23494 V = CURIFE: GOSUB 1070
-23495 PRINT #2, "jmp SKP_"; Q$
-23496 V = CURIFN: GOSUB 1070
-23497 PRINT #2, "SKP_"; Q$; ":"
-23498 GOSUB 920: CURIFN = V: GOSUB 920: I$ = Q$
-23499 IFSKP = CURIFN: GOSUB 17990: PRINT #2, "THN_"; I$; ":": GOSUB 23750: GOTO 1760
-23500 REM ---------- BLOCK ELSE ----------
-23505 IF DPMODE <> 0 THEN GOTO 9590
-23510 IF IFLVL > 0 THEN GOTO 23520
-23515 GOTO 9656
-23520 GOSUB 23700
-23525 IF CURIFS = 0 THEN GOTO 23535
-23530 GOTO 9656
-23535 V = CURIFE
-23540 GOSUB 1070
-23545 PRINT #2, "jmp SKP_"; Q$
-23550 V = CURIFN
-23555 GOSUB 1070
-23560 PRINT #2, "SKP_"; Q$; ":"
-23565 CURIFS = 1
-23570 GOSUB 23750
-23575 GOTO 1760
-23600 REM ---------- BLOCK END IF ----------
-23605 IF DPMODE <> 0 THEN GOTO 9590
-23610 IF IFLVL > 0 THEN GOTO 23620
-23615 GOTO 9656
-23620 GOSUB 23700
-23625 IF CURIFS <> 0 THEN GOTO 23645
-23630 V = CURIFN
-23635 GOSUB 1070
-23640 PRINT #2, "SKP_"; Q$; ":"
-23645 V = CURIFE
-23650 GOSUB 1070
-23655 PRINT #2, "SKP_"; Q$; ":"
-23660 IFLVL = IFLVL - 1
-23665 GOTO 1760
-23700 REM ---------- LOAD CURRENT IF STACK ENTRY ----------
-23705 IF IFLVL = 1 THEN CURIFN = IFN1: CURIFE = IFE1: CURIFS = IFS1: RETURN
-23710 IF IFLVL = 2 THEN CURIFN = IFN2: CURIFE = IFE2: CURIFS = IFS2: RETURN
-23715 IF IFLVL = 3 THEN CURIFN = IFN3: CURIFE = IFE3: CURIFS = IFS3: RETURN
-23720 IF IFLVL = 4 THEN CURIFN = IFN4: CURIFE = IFE4: CURIFS = IFS4: RETURN
-23725 GOTO 9656
-23750 REM ---------- STORE CURRENT IF STACK ENTRY ----------
-23755 IF IFLVL = 1 THEN IFN1 = CURIFN: IFE1 = CURIFE: IFS1 = CURIFS: RETURN
-23760 IF IFLVL = 2 THEN IFN2 = CURIFN: IFE2 = CURIFE: IFS2 = CURIFS: RETURN
-23765 IF IFLVL = 3 THEN IFN3 = CURIFN: IFE3 = CURIFE: IFS3 = CURIFS: RETURN
-23770 IF IFLVL = 4 THEN IFN4 = CURIFN: IFE4 = CURIFE: IFS4 = CURIFS: RETURN
-23775 GOTO 9656
-23800 REM ---------- WHILE BEGIN ----------
-23805 IF DPMODE <> 0 THEN GOTO 9590
-23810 B = B + 1
-23820 IF B > 4 THEN GOTO 9600
-23830 E$ = MID$(B$, 6, LEN(B$) - 5)
-23840 E$ = TRIM$(E$)
-23850 IF LEN(E$) = 0 THEN GOTO 9590
-23860 L$ = E$
-23870 GOSUB 920
-23871 CURWS = V
-23872 GOSUB 920
-23873 CURWE = V
-23874 GOSUB 920
-23875 I$ = Q$
-23876 V = CURWS
-23877 GOSUB 1070
-23878 PRINT #2, "WHL_"; Q$; ":"
-23879 IFSKP = CURWE
-23880 GOSUB 17990
-23881 PRINT #2, "THN_"; I$; ":"
-23882 IF B = 1 THEN S$ = "#WHILE": W = CURWS: FS1 = CURWE: GOTO 1760
-23883 IF B = 2 THEN T$ = "#WHILE": X = CURWS: FS2 = CURWE: GOTO 1760
-23884 IF B = 3 THEN U$ = "#WHILE": Y = CURWS: FS3 = CURWE: GOTO 1760
-23885 V$ = "#WHILE": Z = CURWS: FS4 = CURWE: GOTO 1760
-23900 REM ---------- WEND ----------
-23905 IF DPMODE <> 0 THEN GOTO 9590
-23910 IF B = 0 THEN GOTO 9600
-23920 IF B <> 1 THEN GOTO 23930
-23921 IF S$ <> "#WHILE" THEN GOTO 9600
-23922 CURWS = W: CURWE = FS1: GOTO 23970
-23930 IF B <> 2 THEN GOTO 23940
-23931 IF T$ <> "#WHILE" THEN GOTO 9600
-23932 CURWS = X: CURWE = FS2: GOTO 23970
-23940 IF B <> 3 THEN GOTO 23950
-23941 IF U$ <> "#WHILE" THEN GOTO 9600
-23942 CURWS = Y: CURWE = FS3: GOTO 23970
-23950 IF V$ <> "#WHILE" THEN GOTO 9600
-23960 CURWS = Z: CURWE = FS4
-23970 V = CURWS
-23975 GOSUB 1070
-23980 PRINT #2, "jmp WHL_"; Q$
-23982 V = CURWE
-23983 GOSUB 1070
-23984 PRINT #2, "SKP_"; Q$; ":"
-23985 B = B - 1: GOTO 1760
-24000 REM ---------- XSET handle,index,string ----------
-24005 IF DPMODE <> 0 THEN GOTO 9590
-24010 E$ = MID$(B$, 6, LEN(B$) - 5)
-24015 E$ = TRIM$(E$)
-24020 IF LEN(E$) = 0 THEN GOTO 9590
-24025 K = 1: L = LEN(E$): GOSUB 12890
-24030 IF F = 0 THEN GOTO 9590
-24035 G = F
-24040 N$ = MID$(E$, 1, G - 1)
-24045 GOSUB 14480
-24050 K = 1: L = LEN(E$): GOSUB 12890
-24055 IF F = 0 THEN GOTO 9590
-24060 G = F: K = G + 1: L = LEN(E$): GOSUB 12890
-24065 IF F = 0 THEN GOTO 9590
-24070 H = F
-24075 N$ = MID$(E$, G + 1, H - G - 1)
-24080 GOSUB 14480
-24082 K = 1: L = LEN(E$): GOSUB 12890
-24084 IF F = 0 THEN GOTO 9590
-24086 G = F: K = G + 1: L = LEN(E$): GOSUB 12890
-24088 IF F = 0 THEN GOTO 9590
-24090 H = F
-24092 X$ = MID$(E$, H + 1, LEN(E$) - H)
-24094 X$ = TRIM$(X$)
-24095 IF LEN(X$) = 0 THEN GOTO 9590
-24096 E$ = X$: GOSUB 16590
-24097 GOSUB 21700: GOSUB 21640
-24098 GOSUB 22297
-24099 PRINT #2, "call XASET": GOTO 1760
-24100 REM ---------- XFREE handle ----------
-24105 IF DPMODE <> 0 THEN GOTO 9590
-24110 N$ = MID$(B$, 7, LEN(B$) - 6)
-24115 N$ = TRIM$(N$)
-24120 IF LEN(N$) = 0 THEN GOTO 9590
-24125 GOSUB 14480
-24130 GOSUB 21640
-24135 GOSUB 22297
-24140 PRINT #2, "call XAFREE"
-24145 GOTO 1760
-24200 REM ---------- XALLOC(count[,maxlen]) ----------
-24205 I = D + 5
-24210 GOSUB 12650
-24215 JPAREN = J
-24220 K = I + 1
-24225 L = JPAREN - 1
-24230 IF K > L THEN GOTO 9590
-24235 GOSUB 12890
-24240 IF F <> 0 THEN GOTO 24270
-24245 N$ = MID$(E$, I + 1, JPAREN - I - 1)
-24250 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 9590
-24255 GOSUB 14480
-24260 GOSUB 21640
-24262 PRINT #2, "xor bx,bx"
-24264 GOTO 24290
-24270 N$ = MID$(E$, I + 1, F - I - 1)
-24272 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 9590
-24274 GOSUB 14480
-24276 N$ = MID$(E$, F + 1, JPAREN - F - 1)
-24278 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 9590
-24280 GOSUB 14480
-24282 GOSUB 21700
-24284 GOSUB 21640
-24290 GOSUB 22297
-24292 PRINT #2, "call XAALLOC"
-24294 GOSUB 21670
-24296 D = JPAREN + 1
-24298 GOTO 10020
-24300 REM ---------- XGET$(handle,index) ----------
-24305 GOSUB 21010
-24310 E$ = X$
-24315 I = 6
-24320 GOSUB 12650
-24325 JPAREN = J
-24330 K = 7
-24335 L = JPAREN - 1
-24340 GOSUB 12890
-24345 IF F = 0 THEN GOTO 9590
-24350 G = F
-24355 N$ = MID$(E$, 7, G - 7)
-24360 GOSUB 14480
-24365 N$ = MID$(E$, G + 1, JPAREN - G - 1)
-24370 GOSUB 14480
-24375 GOSUB 21700
-24380 GOSUB 21640
-24385 GOSUB 21830
-24390 GOSUB 22297
-24395 PRINT #2, "call XAGET"
-24400 GOSUB 21800
-24405 GOSUB 21120
-24410 GOTO 25300
-24420 REM ---- EMIT_INPUT_CALL: H=0 INPUTS, H<>0 INPUTN ----
-24430 IF H = 0 THEN GOTO 21890
-24440 GOSUB 22020
-24450 PRINT #2, "call INPUTN"
-24460 RETURN
-24470 REM ---------- TIMER() ----------
-24475 I = D + 4
-24480 GOSUB 12650
-24485 JPAREN = J
-24490 IF JPAREN <> I + 1 THEN GOTO 9590
-24495 IF UTM = 0 THEN PRINT #2, "REQ TM": LET UTM = 1
-24500 PRINT #2, "call TIMERC"
-24505 GOSUB 21670
-24510 D = JPAREN + 1
-24515 GOTO 10020
-24520 REM ---------- EXEC(program$, args$) ----------
-24525 I = D + 3
-24530 GOSUB 12650
-24535 JPAREN = J
-24540 K = I + 1
-24545 L = JPAREN - 1
-24550 IF K > L THEN GOTO 9590
-24555 GOSUB 12890
-24560 IF F = 0 THEN GOTO 9590
-24565 G = F
-24566 T = I + 1
-24567 U = G - I - 1
-24570 X$ = MID$(E$, T, U)
-24585 GOSUB 13080
-24590 IF UEX = 0 THEN PRINT #2, "REQ EX": LET UEX = 1
-24595 PRINT #2, "call EX_SETPROG"
-24596 T = G + 1
-24597 U = JPAREN - G - 1
-24600 X$ = MID$(E$, T, U)
-24615 GOSUB 13080
-24620 PRINT #2, "call EXECC"
-24625 GOSUB 21670
-24630 D = JPAREN + 1
-24635 GOTO 10020
-24650 REM ---------- CPUID() ----------
-24655 I = D + 4
-24660 GOSUB 12650
-24665 JPAREN = J
-24670 IF JPAREN <> I + 1 THEN GOTO 9590
-24675 IF UCP = 0 THEN PRINT #2, "REQ CP": LET UCP = 1
-24680 PRINT #2, "call CPUIDC"
-24685 GOSUB 21670
-24690 D = JPAREN + 1
-24695 GOTO 10020
-24710 REM ---- EMIT_REQ_DT ----
-24715 IF UDT = 0 THEN PRINT #2, "REQ DT": LET UDT = 1
-24718 RETURN
-24720 REM ---------- RANDOMIZE [TIMER|TIMER()|numexpr] ----------
-24725 D$ = MID$(B$, 10, LEN(B$) - 9)
-24730 D$ = TRIM$(D$)
-24735 IF LEN(D$) = 0 THEN GOTO 9590
-24740 IF D$ = "TIMER" THEN GOTO 24780
-24745 IF D$ = "TIMER()" THEN GOTO 24780
-24750 REM ---- general numeric seed expression ----
-24755 E$ = D$
-24760 D = 1
-24765 C = 1
-24770 GOSUB 10020
-24775 GOSUB 10860
-24776 GOSUB 21640
-24777 GOTO 24800
-24780 REM ---- QuickBASIC-compatible: RANDOMIZE TIMER ----
-24785 IF UTM = 0 THEN PRINT #2, "REQ TM": LET UTM = 1
-24790 PRINT #2, "call TIMERC"
-24800 REM ---- AX contains Seed
-24805 GOSUB 920
-24810 L$ = Q$
-24815 PRINT #2, "cmp ax,0"
-24820 PRINT #2, "jne RNDSEED_"; L$
-24825 PRINT #2, "mov ax,1"
-24830 PRINT #2, "RNDSEED_"; L$; ":"
-24835 GOSUB 22291
-24840 PRINT #2, "mov [RSEED],ax"
-24845 GOTO 1760
-24940 REM ---- EMIT_REQ_TS ----
-24945 IF UTS = 0 THEN PRINT #2, "REQ TS": LET UTS = 1
-24948 RETURN
-24960 REM --- TIME$ ---
-24965 GOSUB 21830
-24970 GOSUB 24940
-24975 PRINT #2, "call TIMESTR"
-24980 GOSUB 21800
-24985 P = 2
-24990 RETURN
-25000 REM ---------- DIM STRING: DIM X$(MAXLEN) / DIM X[$] AS STRING * MAXLEN ----------
-25010 IF LEN(F$) < 1 THEN GOTO 9590
-25015 IF RIGHT$(F$, 1) <> "$" THEN GOTO 25040
-25020 F$ = LEFT$(F$, LEN(F$) - 1)
-25040 IF LEN(F$) = 0 THEN GOTO 9590
-25050 N$ = TRIM$(N$)
-25060 IF LEN(N$) = 0 THEN GOTO 9590
-25070 G = 0
-25080 J = 1
-25090 IF J > LEN(N$) THEN GOTO 25150
-25100 MC = ASC(MID$(N$, J, 1))
-25110 IF MC < 48 THEN GOTO 9590
-25120 IF MC > 57 THEN GOTO 9590
-25130 G = G * 10 + MC - 48
-25140 J = J + 1: GOTO 25090
-25150 IF G < 1 THEN GOTO 9590
-25160 IF G > 255 THEN GOTO 9590
-25170 PRINT #2, "DSLEN "; F$; ","; G
-25180 GOTO 1760
-25182 REM ---- DIM [X$|X] AS STRING * N ----
-25183 E = 0
-25184 I = INSTR(D$, " AS STRING * ")
-25185 IF I = 0 THEN RETURN
-25186 E$ = LEFT$(D$, I - 1)
-25187 E$ = RTRIM$(E$)
-25188 N$ = MID$(D$, I + 13, LEN(D$) - I - 12)
-25189 D = 1
-25190 GOSUB 9800
-25191 IF L$ = "" THEN GOTO 9590
-25192 IF D <= LEN(E$) THEN GOTO 9590
-25193 F$ = L$
-25194 E = 1
-25195 RETURN
-25200 REM ---- PUSH_STRFUNCTX: save E$/D/C/TK/H for 13080 ----
-25210 OFCTX = OFCTX + 1
-25220 IF OFCTX > 4 THEN GOTO 9650
-25230 IF OFCTX <> 1 THEN GOTO 25250
-25240 XSET XC,9,E$: OFD1 = D: OFC1 = C: OFT1 = TK: OFH1 = H: RETURN
-25250 IF OFCTX <> 2 THEN GOTO 25270
-25260 XSET XC,10,E$: OFD2 = D: OFC2 = C: OFT2 = TK: OFH2 = H: RETURN
-25270 IF OFCTX <> 3 THEN GOTO 25290
-25280 XSET XC,11,E$: OFD3 = D: OFC3 = C: OFT3 = TK: OFH3 = H: RETURN
-25290 XSET XC,12,E$: OFD4 = D: OFC4 = C: OFT4 = TK: OFH4 = H: RETURN
-25300 REM ---- POP_STRFUNCTX: restore E$/D/C/TK/H for 13080 ----
-25305 IF OFCTX = 0 THEN GOTO 9650
-25310 IF OFCTX <> 1 THEN GOTO 25350
-25320 E$ = XGET$(XC,9)
-25321 D = OFD1: C = OFC1: TK = OFT1: H = OFH1
-25330 OFCTX = 0: RETURN
-25350 IF OFCTX <> 2 THEN GOTO 25390
-25360 E$ = XGET$(XC,10)
-25361  D = OFD2: C = OFC2: TK = OFT2: H = OFH2
-25370 OFCTX = 1: RETURN
-25390 IF OFCTX <> 3 THEN GOTO 25430
-25400 E$ = XGET$(XC,11)
-25401 D = OFD3: C = OFC3: TK = OFT3: H = OFH3
-25410 OFCTX = 2: RETURN
-25430 E$ = XGET$(XC,12)
-25431 D = OFD4: C = OFC4: TK = OFT4: H = OFH4
-25440 OFCTX = 3: RETURN
-25500 REM ---- PEEK_STRFUNCTX: restore E$/D/C/TK/H without OFCTX pop ----
-25510 IF OFCTX = 0 THEN RETURN
-25520 IF OFCTX <> 1 THEN GOTO 25550
-25530 E$ = XGET$(XC,9)
-25531 D = OFD1: C = OFC1: TK = OFT1: H = OFH1
-25540 RETURN
-25550 IF OFCTX <> 2 THEN GOTO 25580
-25560 E$ = XGET$(XC,10)
-25561 D = OFD2: C = OFC2: TK = OFT2: H = OFH2
-25570 RETURN
-25580 IF OFCTX <> 3 THEN GOTO 25610
-25590 E$ = XGET$(XC,11)
-25591 D = OFD3: C = OFC3: TK = OFT3: H = OFH3
-25600 RETURN
-25610 E$ = XGET$(XC,12)
-25611 D = OFD4: C = OFC4: TK = OFT4: H = OFH4
-25620 RETURN
-25640 REM ---- ASSERT_CONTEXTS_CLEAR: enable only for debug runs ----
-25650 REM IF SCTX <> 0 THEN PRINT "CTX SCTX LINE "; A; " = "; SCTX: GOTO 9650
-25660 REM IF OFCTX <> 0 THEN PRINT "CTX OFCTX LINE "; A; " = "; OFCTX: GOTO 9650
-25670 REM IF SRCCTX <> 0 THEN PRINT "CTX SRCCTX LINE "; A; " = "; SRCCTX: GOTO 9650
-25680 REM IF NCTX <> 0 THEN PRINT "CTX NCTX LINE "; A; " = "; NCTX: GOTO 9650
-25690 REM IF FNLEV <> 0 THEN PRINT "CTX FNLEV LINE "; A; " = "; FNLEV: GOTO 9650
-25700 REM RETURN
-25710 REM ---- HAS_PLUS_Q: X$ contains + outside quotes? -> E=1 ----
-25720 E = 0: S = 0: I = 1
-25730 IF I > LEN(X$) THEN RETURN
-25740 MC = ASC(MID$(X$, I, 1))
-25750 IF MC <> 34 THEN GOTO 25780
-25760 IF S = 0 THEN S = 1 ELSE S = 0
-25770 GOTO 25820
-25780 IF S <> 0 THEN GOTO 25820
-25790 IF MC <> 43 THEN GOTO 25820
-25800 E = 1: RETURN
-25820 I = I + 1: GOTO 25730
-25850 REM ---- HAS_TOP_PLUS_QP: top-level + outside quotes/parens? -> E=1 ----
-25860 E = 0: S = 0: H = 0: I = 1
-25870 IF I > LEN(X$) THEN RETURN
-25880 MC = ASC(MID$(X$, I, 1))
-25890 IF MC <> 34 THEN GOTO 25920
-25900 IF S = 0 THEN S = 1 ELSE S = 0
-25910 GOTO 26000
-25920 IF S <> 0 THEN GOTO 26000
-25930 IF MC <> 40 THEN GOTO 25950
-25940 H = H + 1: GOTO 26000
-25950 IF MC <> 41 THEN GOTO 25980
-25960 IF H > 0 THEN H = H - 1
-25970 GOTO 26000
-25980 IF MC <> 43 THEN GOTO 26000
-25990 IF H = 0 THEN E = 1: RETURN
-26000 I = I + 1: GOTO 25870
-26020 REM ---- EMIT_DI_STSAVE: DI to save buffer by STDEP ----
-26030 IF STDEP = 1 THEN PRINT #2, "mov di,OFFSET TMP3$": RETURN
-26040 IF STDEP = 2 THEN GOSUB 26140: PRINT #2, "mov di,OFFSET TMP4$": RETURN
-26050 IF STDEP = 3 THEN GOSUB 26180: PRINT #2, "mov di,OFFSET TMP5$": RETURN
-26060 IF STDEP = 4 THEN GOSUB 26220: PRINT #2, "mov di,OFFSET TMP6$": RETURN
-26070 GOTO 9650
-26080 REM ---- EMIT_SI_STSAVE: SI to save buffer by STDEP ----
-26090 IF STDEP = 1 THEN PRINT #2, "mov si,OFFSET TMP3$": RETURN
-26100 IF STDEP = 2 THEN GOSUB 26140: PRINT #2, "mov si,OFFSET TMP4$": RETURN
-26110 IF STDEP = 3 THEN GOSUB 26180: PRINT #2, "mov si,OFFSET TMP5$": RETURN
-26120 IF STDEP = 4 THEN GOSUB 26220: PRINT #2, "mov si,OFFSET TMP6$": RETURN
-26130 GOTO 9650
-26140 REM ---- EMIT_REQ_T4 ----
-26150 IF UT4 <> 0 THEN RETURN
-26160 PRINT #2, "REQ T4"
-26170 UT4 = 1: RETURN
-26180 REM ---- EMIT_REQ_T5 ----
-26190 IF UT5 <> 0 THEN RETURN
-26200 PRINT #2, "REQ T5"
-26210 UT5 = 1: RETURN
-26220 REM ---- EMIT_REQ_T6 ----
-26230 IF UT6 <> 0 THEN RETURN
-26240 PRINT #2, "REQ T6"
-26250 UT6 = 1: RETURN
-26300 REM ---------- PEEK(offset) / PEEK(segment,offset) ----------
-26305 I = D + 3
-26310 GOSUB 12650
-26315 JPAREN = J
-26320 K = I + 1
-26325 L = JPAREN - 1
-26330 IF K > L THEN GOTO 9590
-26335 GOSUB 12890
-26340 IF F <> 0 THEN GOTO 26370
-26345 N$ = MID$(E$, I + 1, JPAREN - I - 1)
-26350 GOSUB 14480
-26355 GOSUB 21700
-26360 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26365 PRINT #2, "call PEEKD": GOSUB 21670: D = JPAREN + 1: GOTO 10020
-26370 N$ = MID$(E$, I + 1, F - I - 1)
-26375 GOSUB 14480
-26380 N$ = MID$(E$, F + 1, JPAREN - F - 1)
-26385 GOSUB 14480
-26390 GOSUB 21700
-26395 GOSUB 21640
-26400 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26405 PRINT #2, "call PEEKC": GOSUB 21670: D = JPAREN + 1: GOTO 10020
-26420 REM ---------- POKE offset,value / POKE segment,offset,value ----------
-26425 D$ = MID$(B$, 6, LEN(B$) - 5)
-26430 D$ = TRIM$(D$)
-26435 IF LEN(D$) = 0 THEN GOTO 9590
-26440 E$ = D$
-26445 K = 1
-26450 L = LEN(E$)
-26455 GOSUB 12890
-26460 IF F = 0 THEN GOTO 9590
-26465 G = F
-26470 K = G + 1
-26475 L = LEN(E$)
-26480 GOSUB 12890
-26485 IF F <> 0 THEN GOTO 26520
-26490 N$ = MID$(E$, 1, G - 1)
-26495 GOSUB 14480
-26500 N$ = MID$(E$, G + 1, LEN(E$) - G)
-26505 GOSUB 14480
-26510 PRINT #2, "pop cx": GOSUB 21700
-26515 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26518 PRINT #2, "call POKED": GOTO 1760
-26520 H = F
-26525 N$ = MID$(E$, 1, G - 1)
-26530 GOSUB 14480
-26535 N$ = MID$(E$, G + 1, H - G - 1)
-26540 GOSUB 14480
-26545 N$ = MID$(E$, H + 1, LEN(E$) - H)
-26550 GOSUB 14480
-26555 PRINT #2, "pop cx"
-26560 GOSUB 21700
-26565 GOSUB 21640
-26570 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26575 PRINT #2, "call POKEC": GOTO 1760
-26600 REM ---------- DEF SEG [= segment] ----------
-26605 IF LEFT$(B$, 7) <> "DEF SEG" THEN GOTO 9590
-26610 D$ = MID$(B$, 8, LEN(B$) - 7)
-26615 D$ = TRIM$(D$)
-26620 IF LEN(D$) = 0 THEN GOTO 26670
-26625 IF LEFT$(D$, 1) <> "=" THEN GOTO 9590
-26630 N$ = MID$(D$, 2, LEN(D$) - 1)
-26635 N$ = TRIM$(N$)
-26640 IF LEN(N$) = 0 THEN GOTO 9590
-26645 GOSUB 14480
-26650 GOSUB 21640
-26655 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26660 PRINT #2, "call DEFSEGC": GOTO 1760
-26670 IF UPK = 0 THEN PRINT #2, "REQ PK": LET UPK = 1
-26675 PRINT #2, "call DEFSEGR": GOTO 1760
-26700 REM ---------- HEX LITERAL &H0000..&HFFFF ----------
-26705 IF D > LEN(E$) THEN GOTO 9590
-26710 IF MID$(E$, D, 1) <> "H" THEN GOTO 9590
-26715 D = D + 1
-26720 L$ = ""
-26725 IF D > LEN(E$) THEN GOTO 26780
-26730 MC = ASC(MID$(E$, D, 1))
-26735 IF MC >= 48 AND MC <= 57 THEN GOTO 26760
-26740 IF MC >= 65 AND MC <= 70 THEN GOTO 26760
-26745 GOTO 26780
-26760 L$ = L$ + CHR$(MC)
-26765 IF LEN(L$) > 4 THEN GOTO 9590
-26770 D = D + 1
-26775 GOTO 26725
-26780 IF LEN(L$) = 0 THEN GOTO 9590
-26785 PRINT #2, "mov ax,0"; L$; "H"
-26790 GOSUB 21670
-26795 GOTO 10020
-26850 REM ---------- END FOR / EXIT INNERMOST FOR ----------
-26855 IF B = 0 THEN GOTO 9600
-26860 IF B = 1 THEN GOTO 26900
-26865 IF B = 2 THEN GOTO 26920
-26870 IF B = 3 THEN GOTO 26940
-26875 GOTO 26960
-26900 IF S$ = "#WHILE" THEN GOTO 9600
-26905 E = W
-26910 GOTO 26980
-26920 IF T$ = "#WHILE" THEN GOTO 9600
-26925 E = X
-26930 GOTO 26980
-26940 IF U$ = "#WHILE" THEN GOTO 9600
-26945 E = Y
-26950 GOTO 26980
-26960 IF V$ = "#WHILE" THEN GOTO 9600
-26965 E = Z
-26980 V = E
-26985 GOSUB 1070
-26990 PRINT #2, "jmp L_END_"; Q$
-26995 GOTO 1760
-27040 REM ---- MIN/MAX COMMON PREAMBLE ----
-27050 I = D + 2
-27060 GOSUB 12650
-27070 JPAREN = J
-27080 K = I + 1
-27090 L = JPAREN - 1
-27100 GOSUB 12890
-27110 IF F = 0 THEN GOTO 9590
-27120 G = F
-27130 N$ = MID$(E$, I + 1, G - I - 1)
-27140 GOSUB 14480
-27150 N$ = MID$(E$, G + 1, JPAREN - G - 1)
-27160 GOSUB 14480
-27165 GOSUB 21700
-27166 GOSUB 21640
-27167 GOTO 22294
-27170 GOSUB 21670
-27180 D = JPAREN + 1
-27190 GOTO 10020
-27250 REM ---- LEFT$/RIGHT$ COMMON PREAMBLE ----
-27260 GOSUB 21010
-27270 E$ = X$
-27280 GOSUB 12650
-27290 K = I + 1
-27300 L = J - 1
-27310 GOSUB 12890
-27320 G = F
-27330 IF G = 0 THEN GOTO 9590
-27340 X$ = MID$(E$, I + 1, G - I - 1)
-27350 N$ = MID$(E$, G + 1, J - G - 1)
-27352 GOSUB 14480
-27354 E$ = X$
-27356 GOSUB 16590
-27358 GOTO 15230
-27360 GOSUB 21960
-27370 GOSUB 21730
-27380 GOTO 25300
-27480 REM ---- SIMPLE STRINGFUN COMMON PREAMBLE ----
-27490 GOTO 15512
-27540 GOTO 15520
-27600 REM ---- NUMSTRARG: set string argument to SI, set JPAREN ----
-27610 GOSUB 12650
-27620 JPAREN = J
-27630 X$ = MID$(E$, I + 1, JPAREN - I - 1)
-27640 GOTO 13080
+12865 REM ---- QB label line? A$ = IDENT: -> E=1, L$=IDENT ----
+12870 E = 0
+12875 IF LEN(A$) < 2 THEN RETURN
+12880 IF RIGHT$(A$, 1) <> ":" THEN RETURN
+12885 E$ = LEFT$(A$, LEN(A$) - 1)
+12890 D = 1
+12895 GOSUB 6150
+12900 IF L$ = "" THEN RETURN
+12905 IF H <> 0 THEN RETURN
+12910 IF D <= LEN(E$) THEN RETURN
+12915 E = 1
+12920 RETURN
+12925 REM ---------------- GET ---------------------
+12930 GOSUB 12665
+12935 IF E = 0 THEN GOTO 5990
+12940 IF LEN(N$) = 0 THEN GOTO 12980
+12945 GOSUB 8445
+12950 GOSUB 12445
+12955 GOSUB 12350
+12960 GOSUB 12610
+12965 PRINT #2, "call GETHIN"
+12970 GOSUB 12145
+12975 PRINT #2, "call SEEK_BYTEH"
+12980 GOSUB 12445
+12985 GOSUB 12350
+12990 GOSUB 12610
+12995 PRINT #2, "call GETHIN"
+13000 PRINT #2, "call READ_BYTEH"
+13005 PRINT #2, "DN "; IDTMP$
+13010 PRINT #2, "mov [N_"; IDTMP$; "],ax"
+13015 R$ = W$
+13020 GOTO 1705
+13025 REM ---------------- PUT ---------------------
+13030 GOSUB 12665
+13035 IF E = 0 THEN GOTO 5990
+13040 IF LEN(N$) = 0 THEN GOTO 13080
+13045 GOSUB 8445
+13050 GOSUB 12445
+13055 GOSUB 12350
+13060 GOSUB 12610
+13065 PRINT #2, "call GETHOUT"
+13070 GOSUB 12145
+13075 PRINT #2, "call SEEK_BYTEH"
+13080 GOSUB 12445
+13085 PRINT #2, "DN "; IDTMP$
+13090 PRINT #2, "mov ax,[N_"; IDTMP$; "]"
+13095 GOSUB 12550
+13100 PRINT #2, "call WRITE_BYTEH"
+13105 R$ = W$
+13110 GOTO 1705
+13115 REM ---- real BASIC end at the very end of the file ----
+13120 END
+13125 REM ---- EMIT_REQ_PN ----
+13130 IF UPN = 0 THEN PRINT #2, "REQ PN": LET UPN = 1
+13135 RETURN
+13140 REM ---- EMIT_LABEL_THN_I ----
+13145 PRINT #2, "THN_"; I$; ":"
+13150 RETURN
+13155 REM ---- EMIT_STORE_N_D_AX ----
+13160 PRINT #2, "DN "; D$
+13165 PRINT #2, "mov [N_"; D$; "],ax"
+13170 RETURN
+13175 REM ---- EMIT_JMP_SKP_Q ----
+13180 PRINT #2, "jmp SKP_"; Q$
+13185 RETURN
+13190 REM ---- EMIT_REQ_IO ----
+13195 IF UIO = 0 THEN PRINT #2, "REQ IO": LET UIO = 1
+13200 RETURN
+13205 REM ---- EMIT_REQ_SO ----
+13210 IF USO = 0 THEN PRINT #2, "REQ SO": LET USO = 1
+13215 RETURN
+13220 REM ---------- BLOCK IF BEGIN ----------
+13225 IF DPMODE <> 0 THEN GOTO 5990
+13230 IF IFLVL < 4 THEN GOTO 13240
+13235 GOTO 6025
+13240 GOSUB 1305
+13245 CURIFN = V
+13250 GOSUB 1305
+13255 CURIFE = V
+13260 GOSUB 1305
+13265 I$ = Q$
+13270 IFSKP = CURIFN
+13275 GOSUB 9960
+13280 GOSUB 13140
+13285 IFLVL = IFLVL + 1
+13290 ON IFLVL GOTO 13295,13300,13305,13310: GOTO 6025
+13295 IFN1 = CURIFN: IFE1 = CURIFE: IFS1 = 0: GOTO 1705
+13300 IFN2 = CURIFN: IFE2 = CURIFE: IFS2 = 0: GOTO 1705
+13305 IFN3 = CURIFN: IFE3 = CURIFE: IFS3 = 0: GOTO 1705
+13310 IFN4 = CURIFN: IFE4 = CURIFE: IFS4 = 0
+13315 GOTO 1705
+13320 REM ---------- BLOCK ELSEIF ----------
+13325 IF DPMODE <> 0 THEN GOTO 5990
+13330 IF IFLVL > 0 THEN GOTO 13340
+13335 GOTO 6025
+13340 GOSUB 13610
+13345 IF CURIFS = 0 THEN GOTO 13355
+13350 GOTO 6025
+13355 I = 8
+13360 O = 0
+13365 IF I > LEN(B$) - 3 THEN GOTO 5990
+13370 MC = ASC(MID$(B$, I, 1))
+13375 IF MC <> 34 THEN GOTO 13390
+13380 IF O = 0 THEN O = 1 ELSE O = 0
+13385 GOTO 13400
+13390 IF O <> 0 THEN GOTO 13400
+13395 IF MID$(B$, I, 4) = "THEN" THEN GOTO 13410
+13400 I = I + 1
+13405 GOTO 13365
+13410 L$ = MID$(B$, 8, I - 8)
+13415 R$ = MID$(B$, I + 5, LEN(B$) - I - 4)
+13420 R$ = TRIM$(R$)
+13425 IF LEN(R$) <> 0 THEN GOTO 5990
+13430 V = CURIFE: GOSUB 1365
+13435 GOSUB 13175
+13440 V = CURIFN: GOSUB 1365
+13445 GOSUB 12580
+13450 GOSUB 1305: CURIFN = V: GOSUB 1305: I$ = Q$
+13455 IFSKP = CURIFN: GOSUB 9960: GOSUB 13140: GOSUB 13640: GOTO 1705
+13460 REM ---------- BLOCK ELSE ----------
+13465 IF DPMODE <> 0 THEN GOTO 5990
+13470 IF IFLVL > 0 THEN GOTO 13480
+13475 GOTO 6025
+13480 GOSUB 13610
+13485 IF CURIFS = 0 THEN GOTO 13495
+13490 GOTO 6025
+13495 V = CURIFE
+13500 GOSUB 1365
+13505 GOSUB 13175
+13510 V = CURIFN
+13515 GOSUB 1365
+13520 GOSUB 12580
+13525 CURIFS = 1
+13530 GOSUB 13640
+13535 GOTO 1705
+13540 REM ---------- BLOCK END IF ----------
+13545 IF DPMODE <> 0 THEN GOTO 5990
+13550 IF IFLVL > 0 THEN GOTO 13560
+13555 GOTO 6025
+13560 GOSUB 13610
+13565 IF CURIFS <> 0 THEN GOTO 13585
+13570 V = CURIFN
+13575 GOSUB 1365
+13580 GOSUB 12580
+13585 V = CURIFE
+13590 GOSUB 1365
+13595 GOSUB 12580
+13600 IFLVL = IFLVL - 1
+13605 GOTO 1705
+13610 REM ---------- LOAD CURRENT IF STACK ENTRY ----------
+13615 ON IFLVL GOTO 13620,13625,13630,13635: GOTO 6025
+13620 CURIFN = IFN1: CURIFE = IFE1: CURIFS = IFS1: RETURN
+13625 CURIFN = IFN2: CURIFE = IFE2: CURIFS = IFS2: RETURN
+13630 CURIFN = IFN3: CURIFE = IFE3: CURIFS = IFS3: RETURN
+13635 CURIFN = IFN4: CURIFE = IFE4: CURIFS = IFS4: RETURN
+13640 REM ---------- STORE CURRENT IF STACK ENTRY ----------
+13645 ON IFLVL GOTO 13650,13655,13660,13665: GOTO 6025
+13650 IFN1 = CURIFN: IFE1 = CURIFE: IFS1 = CURIFS: RETURN
+13655 IFN2 = CURIFN: IFE2 = CURIFE: IFS2 = CURIFS: RETURN
+13660 IFN3 = CURIFN: IFE3 = CURIFE: IFS3 = CURIFS: RETURN
+13665 IFN4 = CURIFN: IFE4 = CURIFE: IFS4 = CURIFS: RETURN
+13670 REM ---------- WHILE BEGIN ----------
+13675 IF DPMODE <> 0 THEN GOTO 5990
+13680 B = B + 1
+13685 IF B > 4 THEN GOTO 5995
+13690 E$ = MID$(B$, 6, LEN(B$) - 5)
+13695 E$ = TRIM$(E$)
+13700 IF LEN(E$) = 0 THEN GOTO 5990
+13705 L$ = E$
+13710 GOSUB 1305
+13715 CURWS = V
+13720 GOSUB 1305
+13725 CURWE = V
+13730 GOSUB 1305
+13735 I$ = Q$
+13740 V = CURWS
+13745 GOSUB 1365
+13750 PRINT #2, "WHL_"; Q$; ":"
+13755 IFSKP = CURWE
+13760 GOSUB 9960
+13765 GOSUB 13140
+13770 IF B = 1 THEN K1 = 1: W = CURWS: FS1 = CURWE: GOTO 1705
+13775 IF B = 2 THEN K2 = 1: X = CURWS: FS2 = CURWE: GOTO 1705
+13780 IF B = 3 THEN K3 = 1: Y = CURWS: FS3 = CURWE: GOTO 1705
+13785 K4 = 1: Z = CURWS: FS4 = CURWE: GOTO 1705
+13790 REM ---------- WEND ----------
+13795 IF DPMODE <> 0 THEN GOTO 5990
+13800 IF B = 0 THEN GOTO 5995
+13805 ON B GOTO 13810,13820,13830,13840: GOTO 5995
+13810 IF K1 <> 1 THEN GOTO 5995
+13815 CURWS = W: CURWE = FS1: GOTO 13850
+13820 IF K2 <> 1 THEN GOTO 5995
+13825 CURWS = X: CURWE = FS2: GOTO 13850
+13830 IF K3 <> 1 THEN GOTO 5995
+13835 CURWS = Y: CURWE = FS3: GOTO 13850
+13840 IF K4 <> 1 THEN GOTO 5995
+13845 CURWS = Z: CURWE = FS4
+13850 V = CURWS
+13855 GOSUB 1365
+13860 PRINT #2, "jmp WHL_"; Q$
+13865 V = CURWE
+13870 GOSUB 1365
+13875 GOSUB 12580
+13880 B = B - 1: GOTO 1705
+13885 REM ---------- XSET handle,index,string ----------
+13890 IF DPMODE <> 0 THEN GOTO 5990
+13895 E$ = MID$(B$, 6, LEN(B$) - 5)
+13900 E$ = TRIM$(E$)
+13905 IF LEN(E$) = 0 THEN GOTO 5990
+13910 K = 1: L = LEN(E$): GOSUB 7685
+13915 IF F = 0 THEN GOTO 5990
+13920 G = F
+13925 N$ = MID$(E$, 1, G - 1)
+13930 GOSUB 8445
+13935 K = 1: L = LEN(E$): GOSUB 7685
+13940 IF F = 0 THEN GOTO 5990
+13945 G = F: K = G + 1: L = LEN(E$): GOSUB 7685
+13950 IF F = 0 THEN GOTO 5990
+13955 H = F
+13960 N$ = MID$(E$, G + 1, H - G - 1)
+13965 GOSUB 8445
+13970 K = 1: L = LEN(E$): GOSUB 7685
+13975 IF F = 0 THEN GOTO 5990
+13980 G = F: K = G + 1: L = LEN(E$): GOSUB 7685
+13985 IF F = 0 THEN GOTO 5990
+13990 H = F
+13995 X$ = MID$(E$, H + 1, LEN(E$) - H)
+14000 X$ = TRIM$(X$)
+14005 IF LEN(X$) = 0 THEN GOTO 5990
+14010 E$ = X$: GOSUB 9140
+14015 GOSUB 12175: GOSUB 12145
+14020 GOSUB 12535
+14025 PRINT #2, "call XASET": GOTO 1705
+14030 REM ---------- XFREE handle ----------
+14035 IF DPMODE <> 0 THEN GOTO 5990
+14040 N$ = MID$(B$, 7, LEN(B$) - 6)
+14045 N$ = TRIM$(N$)
+14050 IF LEN(N$) = 0 THEN GOTO 5990
+14055 GOSUB 8445
+14060 GOSUB 12145
+14065 GOSUB 12535
+14070 PRINT #2, "call XAFREE"
+14075 GOTO 1705
+14080 REM ---------- XALLOC(count[,maxlen]) ----------
+14085 I = D + 5
+14090 GOSUB 7575
+14095 JPAREN = J
+14100 K = I + 1
+14105 L = JPAREN - 1
+14110 IF K > L THEN GOTO 5990
+14115 GOSUB 7685
+14120 IF F <> 0 THEN GOTO 14155
+14125 N$ = MID$(E$, I + 1, JPAREN - I - 1)
+14130 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 5990
+14135 GOSUB 8445
+14140 GOSUB 12145
+14145 PRINT #2, "xor bx,bx"
+14150 GOTO 14195
+14155 N$ = MID$(E$, I + 1, F - I - 1)
+14160 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 5990
+14165 GOSUB 8445
+14170 N$ = MID$(E$, F + 1, JPAREN - F - 1)
+14175 N$ = TRIM$(N$): IF LEN(N$) = 0 THEN GOTO 5990
+14180 GOSUB 8445
+14185 GOSUB 12175
+14190 GOSUB 12145
+14195 GOSUB 12535
+14200 PRINT #2, "call XAALLOC"
+14205 GOSUB 12160
+14210 D = JPAREN + 1
+14215 GOTO 6260
+14220 REM ---------- XGET$(handle,index) ----------
+14225 GOSUB 11770
+14230 E$ = X$
+14235 I = 6
+14240 GOSUB 7575
+14245 JPAREN = J
+14250 K = 7
+14255 L = JPAREN - 1
+14260 GOSUB 7685
+14265 IF F = 0 THEN GOTO 5990
+14270 G = F
+14275 N$ = MID$(E$, 7, G - 7)
+14280 GOSUB 8445
+14285 N$ = MID$(E$, G + 1, JPAREN - G - 1)
+14290 GOSUB 8445
+14295 GOSUB 12175
+14300 GOSUB 12145
+14305 GOSUB 12240
+14310 GOSUB 12535
+14315 PRINT #2, "call XAGET"
+14320 GOSUB 12225
+14325 GOSUB 11835
+14330 GOTO 14995
+14335 REM ---- EMIT_INPUT_CALL: H=0 INPUTS, H<>0 INPUTN ----
+14340 IF H = 0 THEN GOTO 12270
+14345 GOSUB 12335
+14350 PRINT #2, "call INPUTN"
+14355 RETURN
+14360 REM ---------- TIMER() ----------
+14365 I = D + 4
+14370 GOSUB 7575
+14375 JPAREN = J
+14380 IF JPAREN <> I + 1 THEN GOTO 5990
+14385 IF UTM = 0 THEN PRINT #2, "REQ TM": LET UTM = 1
+14390 PRINT #2, "call TIMERC"
+14395 GOSUB 12160
+14400 D = JPAREN + 1
+14405 GOTO 6260
+14410 REM ---------- EXEC(program$, args$) ----------
+14415 I = D + 3
+14420 GOSUB 7575
+14425 JPAREN = J
+14430 K = I + 1
+14435 L = JPAREN - 1
+14440 IF K > L THEN GOTO 5990
+14445 GOSUB 7685
+14450 IF F = 0 THEN GOTO 5990
+14455 G = F
+14460 T = I + 1
+14465 U = G - I - 1
+14470 X$ = MID$(E$, T, U)
+14475 GOSUB 7780
+14480 IF UEX = 0 THEN PRINT #2, "REQ EX": LET UEX = 1
+14485 PRINT #2, "call EX_SETPROG"
+14490 T = G + 1
+14495 U = JPAREN - G - 1
+14500 X$ = MID$(E$, T, U)
+14505 GOSUB 7780
+14510 PRINT #2, "call EXECC"
+14515 GOSUB 12160
+14520 D = JPAREN + 1
+14525 GOTO 6260
+14530 REM ---------- CPUID() ----------
+14535 I = D + 4
+14540 GOSUB 7575
+14545 JPAREN = J
+14550 IF JPAREN <> I + 1 THEN GOTO 5990
+14555 IF UCP = 0 THEN PRINT #2, "REQ CP": LET UCP = 1
+14560 PRINT #2, "call CPUIDC"
+14565 GOSUB 12160
+14570 D = JPAREN + 1
+14575 GOTO 6260
+14580 REM ---- EMIT_REQ_DT ----
+14585 IF UDT = 0 THEN PRINT #2, "REQ DT": LET UDT = 1
+14590 RETURN
+14595 REM ---------- RANDOMIZE [TIMER|TIMER()|numexpr] ----------
+14600 D$ = MID$(B$, 10, LEN(B$) - 9)
+14605 D$ = TRIM$(D$)
+14610 IF LEN(D$) = 0 THEN GOTO 5990
+14615 IF D$ = "TIMER" THEN GOTO 14665
+14620 IF D$ = "TIMER()" THEN GOTO 14665
+14625 REM ---- general numeric seed expression ----
+14630 E$ = D$
+14635 D = 1
+14640 C = 1
+14645 GOSUB 6260
+14650 GOSUB 6790
+14655 GOSUB 12145
+14660 GOTO 14680
+14665 REM ---- QuickBASIC-compatible: RANDOMIZE TIMER ----
+14670 IF UTM = 0 THEN PRINT #2, "REQ TM": LET UTM = 1
+14675 PRINT #2, "call TIMERC"
+14680 REM ---- AX contains Seed
+14685 GOSUB 1305
+14690 L$ = Q$
+14695 PRINT #2, "cmp ax,0"
+14700 PRINT #2, "jne RNDSEED_"; L$
+14705 PRINT #2, "mov ax,1"
+14710 PRINT #2, "RNDSEED_"; L$; ":"
+14715 GOSUB 12505
+14720 PRINT #2, "mov [RSEED],ax"
+14725 GOTO 1705
+14730 REM ---- EMIT_REQ_TS ----
+14735 IF UTS = 0 THEN PRINT #2, "REQ TS": LET UTS = 1
+14740 RETURN
+14745 REM --- TIME$ ---
+14750 GOSUB 12240
+14755 GOSUB 14730
+14760 PRINT #2, "call TIMESTR"
+14765 GOSUB 12225
+14770 P = 2
+14775 RETURN
+14780 REM ---------- DIM STRING: DIM X$(MAXLEN) / DIM X[$] AS STRING * MAXLEN ----------
+14785 IF LEN(F$) < 1 THEN GOTO 5990
+14790 IF RIGHT$(F$, 1) <> "$" THEN GOTO 14800
+14795 F$ = LEFT$(F$, LEN(F$) - 1)
+14800 IF LEN(F$) = 0 THEN GOTO 5990
+14805 N$ = TRIM$(N$)
+14810 IF LEN(N$) = 0 THEN GOTO 5990
+14815 G = 0
+14820 J = 1
+14825 IF J > LEN(N$) THEN GOTO 14855
+14830 MC = ASC(MID$(N$, J, 1))
+14835 IF MC < 48 THEN GOTO 5990
+14840 IF MC > 57 THEN GOTO 5990
+14845 G = G * 10 + MC - 48
+14850 J = J + 1: GOTO 14825
+14855 IF G < 1 THEN GOTO 5990
+14860 IF G > 255 THEN GOTO 5990
+14865 PRINT #2, "DSLEN "; F$; ","; G
+14870 GOTO 1705
+14875 REM ---- DIM [X$|X] AS STRING * N ----
+14880 E = 0
+14885 I = INSTR(D$, " AS STRING * ")
+14890 IF I = 0 THEN RETURN
+14895 E$ = LEFT$(D$, I - 1)
+14900 E$ = RTRIM$(E$)
+14905 N$ = MID$(D$, I + 13, LEN(D$) - I - 12)
+14910 D = 1
+14915 GOSUB 6150
+14920 IF L$ = "" THEN GOTO 5990
+14925 IF D <= LEN(E$) THEN GOTO 5990
+14930 F$ = L$
+14935 E = 1
+14940 RETURN
+14945 REM ---- PUSH_STRFUNCTX: save E$/D/C/TK/H for 13080 ----
+14950 OFCTX = OFCTX + 1
+14955 IF OFCTX > 4 THEN GOTO 6020
+14960 IF OFCTX <> 1 THEN GOTO 14970
+14965 XC$(9) = E$: OFD1 = D: OFC1 = C: OFT1 = TK: OFH1 = H: RETURN
+14970 IF OFCTX <> 2 THEN GOTO 14980
+14975 XC$(10) = E$: OFD2 = D: OFC2 = C: OFT2 = TK: OFH2 = H: RETURN
+14980 IF OFCTX <> 3 THEN GOTO 14990
+14985 XC$(11) = E$: OFD3 = D: OFC3 = C: OFT3 = TK: OFH3 = H: RETURN
+14990 XC$(12) = E$: OFD4 = D: OFC4 = C: OFT4 = TK: OFH4 = H: RETURN
+14995 REM ---- POP_STRFUNCTX: restore E$/D/C/TK/H for 13080 ----
+15000 IF OFCTX = 0 THEN GOTO 6020
+15005 IF OFCTX <> 1 THEN GOTO 15025
+15010 E$ = XC$(9)
+15015 D = OFD1: C = OFC1: TK = OFT1: H = OFH1
+15020 OFCTX = 0: RETURN
+15025 IF OFCTX <> 2 THEN GOTO 15045
+15030 E$ = XC$(10)
+15035 D = OFD2: C = OFC2: TK = OFT2: H = OFH2
+15040 OFCTX = 1: RETURN
+15045 IF OFCTX <> 3 THEN GOTO 15065
+15050 E$ = XC$(11)
+15055 D = OFD3: C = OFC3: TK = OFT3: H = OFH3
+15060 OFCTX = 2: RETURN
+15065 E$ = XC$(12)
+15070 D = OFD4: C = OFC4: TK = OFT4: H = OFH4
+15075 OFCTX = 3: RETURN
+15080 REM ---- PEEK_STRFUNCTX: restore E$/D/C/TK/H without OFCTX pop ----
+15085 IF OFCTX = 0 THEN RETURN
+15090 IF OFCTX <> 1 THEN GOTO 15110
+15095 E$ = XC$(9)
+15100 D = OFD1: C = OFC1: TK = OFT1: H = OFH1
+15105 RETURN
+15110 IF OFCTX <> 2 THEN GOTO 15130
+15115 E$ = XC$(10)
+15120 D = OFD2: C = OFC2: TK = OFT2: H = OFH2
+15125 RETURN
+15130 IF OFCTX <> 3 THEN GOTO 15150
+15135 E$ = XC$(11)
+15140 D = OFD3: C = OFC3: TK = OFT3: H = OFH3
+15145 RETURN
+15150 E$ = XC$(12)
+15155 D = OFD4: C = OFC4: TK = OFT4: H = OFH4
+15160 RETURN
+15165 REM ---- ASSERT_CONTEXTS_CLEAR: enable only for debug runs ----
+15170 REM IF SCTX <> 0 THEN PRINT "CTX SCTX LINE "; A; " = "; SCTX: GOTO 9650
+15175 REM IF OFCTX <> 0 THEN PRINT "CTX OFCTX LINE "; A; " = "; OFCTX: GOTO 9650
+15180 REM IF SRCCTX <> 0 THEN PRINT "CTX SRCCTX LINE "; A; " = "; SRCCTX: GOTO 9650
+15185 REM IF NCTX <> 0 THEN PRINT "CTX NCTX LINE "; A; " = "; NCTX: GOTO 9650
+15190 REM IF FNLEV <> 0 THEN PRINT "CTX FNLEV LINE "; A; " = "; FNLEV: GOTO 9650
+15195 REM RETURN
+15200 REM ---- HAS_PLUS_Q: X$ contains + outside quotes? -> E=1 ----
+15205 E = 0: S = 0: I = 1
+15210 IF I > LEN(X$) THEN RETURN
+15215 MC = ASC(MID$(X$, I, 1))
+15220 IF MC <> 34 THEN GOTO 15235
+15225 IF S = 0 THEN S = 1 ELSE S = 0
+15230 GOTO 15250
+15235 IF S <> 0 THEN GOTO 15250
+15240 IF MC <> 43 THEN GOTO 15250
+15245 E = 1: RETURN
+15250 I = I + 1: GOTO 15210
+15255 REM ---- HAS_TOP_PLUS_QP: top-level + outside quotes/parens? -> E=1 ----
+15260 E = 0: S = 0: H = 0: I = 1
+15265 IF I > LEN(X$) THEN RETURN
+15270 MC = ASC(MID$(X$, I, 1))
+15275 IF MC <> 34 THEN GOTO 15290
+15280 IF S = 0 THEN S = 1 ELSE S = 0
+15285 GOTO 15330
+15290 IF S <> 0 THEN GOTO 15330
+15295 IF MC <> 40 THEN GOTO 15305
+15300 H = H + 1: GOTO 15330
+15305 IF MC <> 41 THEN GOTO 15320
+15310 IF H > 0 THEN H = H - 1
+15315 GOTO 15330
+15320 IF MC <> 43 THEN GOTO 15330
+15325 IF H = 0 THEN E = 1: RETURN
+15330 I = I + 1: GOTO 15265
+15335 REM ---- EMIT_DI_STSAVE: DI to save buffer by STDEP ----
+15340 IF STDEP = 1 THEN PRINT #2, "mov di,OFFSET TMP3$": RETURN
+15345 IF STDEP = 2 THEN GOSUB 15395: PRINT #2, "mov di,OFFSET TMP4$": RETURN
+15350 IF STDEP = 3 THEN GOSUB 15415: PRINT #2, "mov di,OFFSET TMP5$": RETURN
+15355 IF STDEP = 4 THEN GOSUB 15435: PRINT #2, "mov di,OFFSET TMP6$": RETURN
+15360 GOTO 6020
+15365 REM ---- EMIT_SI_STSAVE: SI to save buffer by STDEP ----
+15370 IF STDEP = 1 THEN PRINT #2, "mov si,OFFSET TMP3$": RETURN
+15375 IF STDEP = 2 THEN GOSUB 15395: PRINT #2, "mov si,OFFSET TMP4$": RETURN
+15380 IF STDEP = 3 THEN GOSUB 15415: PRINT #2, "mov si,OFFSET TMP5$": RETURN
+15385 IF STDEP = 4 THEN GOSUB 15435: PRINT #2, "mov si,OFFSET TMP6$": RETURN
+15390 GOTO 6020
+15395 REM ---- EMIT_REQ_T4 ----
+15400 IF UT4 <> 0 THEN RETURN
+15405 PRINT #2, "REQ T4"
+15410 UT4 = 1: RETURN
+15415 REM ---- EMIT_REQ_T5 ----
+15420 IF UT5 <> 0 THEN RETURN
+15425 PRINT #2, "REQ T5"
+15430 UT5 = 1: RETURN
+15435 REM ---- EMIT_REQ_T6 ----
+15440 IF UT6 <> 0 THEN RETURN
+15445 PRINT #2, "REQ T6"
+15450 UT6 = 1: RETURN
+15455 REM ---------- PEEK(offset) / PEEK(segment,offset) ----------
+15460 I = D + 3
+15465 GOSUB 7575
+15470 JPAREN = J
+15475 K = I + 1
+15480 L = JPAREN - 1
+15485 IF K > L THEN GOTO 5990
+15490 GOSUB 7685
+15495 IF F <> 0 THEN GOTO 15525
+15500 N$ = MID$(E$, I + 1, JPAREN - I - 1)
+15505 GOSUB 8445
+15510 GOSUB 12175
+15515 GOSUB 12595
+15520 PRINT #2, "call PEEKD": GOSUB 12160: D = JPAREN + 1: GOTO 6260
+15525 N$ = MID$(E$, I + 1, F - I - 1)
+15530 GOSUB 8445
+15535 N$ = MID$(E$, F + 1, JPAREN - F - 1)
+15540 GOSUB 8445
+15545 GOSUB 12175
+15550 GOSUB 12145
+15555 GOSUB 12595
+15560 PRINT #2, "call PEEKC": GOSUB 12160: D = JPAREN + 1: GOTO 6260
+15565 REM ---------- POKE offset,value / POKE segment,offset,value ----------
+15570 D$ = MID$(B$, 6, LEN(B$) - 5)
+15575 D$ = TRIM$(D$)
+15580 IF LEN(D$) = 0 THEN GOTO 5990
+15585 E$ = D$
+15590 K = 1
+15595 L = LEN(E$)
+15600 GOSUB 7685
+15605 IF F = 0 THEN GOTO 5990
+15610 G = F
+15615 K = G + 1
+15620 L = LEN(E$)
+15625 GOSUB 7685
+15630 IF F <> 0 THEN GOTO 15670
+15635 N$ = MID$(E$, 1, G - 1)
+15640 GOSUB 8445
+15645 N$ = MID$(E$, G + 1, LEN(E$) - G)
+15650 GOSUB 8445
+15655 PRINT #2, "pop cx": GOSUB 12175
+15660 GOSUB 12595
+15665 PRINT #2, "call POKED": GOTO 1705
+15670 H = F
+15675 N$ = MID$(E$, 1, G - 1)
+15680 GOSUB 8445
+15685 N$ = MID$(E$, G + 1, H - G - 1)
+15690 GOSUB 8445
+15695 N$ = MID$(E$, H + 1, LEN(E$) - H)
+15700 GOSUB 8445
+15705 PRINT #2, "pop cx"
+15710 GOSUB 12175
+15715 GOSUB 12145
+15720 GOSUB 12595
+15725 PRINT #2, "call POKEC": GOTO 1705
+15730 REM ---------- DEF SEG [= segment] ----------
+15735 IF LEFT$(B$, 7) <> "DEF SEG" THEN GOTO 5990
+15740 D$ = MID$(B$, 8, LEN(B$) - 7)
+15745 D$ = TRIM$(D$)
+15750 IF LEN(D$) = 0 THEN GOTO 15795
+15755 IF LEFT$(D$, 1) <> "=" THEN GOTO 5990
+15760 N$ = MID$(D$, 2, LEN(D$) - 1)
+15765 N$ = TRIM$(N$)
+15770 IF LEN(N$) = 0 THEN GOTO 5990
+15775 GOSUB 8445
+15780 GOSUB 12145
+15785 GOSUB 12595
+15790 PRINT #2, "call DEFSEGC": GOTO 1705
+15795 GOSUB 12595
+15800 PRINT #2, "call DEFSEGR": GOTO 1705
+15805 REM ---------- HEX LITERAL &H0000..&HFFFF ----------
+15810 IF D > LEN(E$) THEN GOTO 5990
+15815 IF MID$(E$, D, 1) <> "H" THEN GOTO 5990
+15820 D = D + 1
+15825 L$ = ""
+15830 IF D > LEN(E$) THEN GOTO 15875
+15835 MC = ASC(MID$(E$, D, 1))
+15840 IF MC >= 48 AND MC <= 57 THEN GOTO 15855
+15845 IF MC >= 65 AND MC <= 70 THEN GOTO 15855
+15850 GOTO 15875
+15855 L$ = L$ + CHR$(MC)
+15860 IF LEN(L$) > 4 THEN GOTO 5990
+15865 D = D + 1
+15870 GOTO 15830
+15875 IF LEN(L$) = 0 THEN GOTO 5990
+15880 PRINT #2, "mov ax,0"; L$; "H"
+15885 GOSUB 12160
+15890 GOTO 6260
+15895 REM ---------- END FOR / EXIT FOR / EXIT INNERMOST FOR ----------
+15900 IF B = 0 THEN GOTO 5995
+15905 ON B GOTO 15910,15925,15940,15955: GOTO 5995
+15910 IF K1 <> 0 THEN GOTO 5995
+15915 E = W
+15920 GOTO 15965
+15925 IF K2 <> 0 THEN GOTO 5995
+15930 E = X
+15935 GOTO 15965
+15940 IF K3 <> 0 THEN GOTO 5995
+15945 E = Y
+15950 GOTO 15965
+15955 IF K4 <> 0 THEN GOTO 5995
+15960 E = Z
+15965 V = E
+15970 GOSUB 1365
+15975 PRINT #2, "jmp L_END_"; Q$
+15980 GOTO 1705
+15985 REM ---------- CHDIR / MKDIR / RMDIR COMMON ----------
+15990 IF LEN(B$) < 7 THEN GOTO 5990
+15995 X$ = MID$(B$, 7, LEN(B$) - 6)
+16000 GOSUB 7780
+16005 GOSUB 12410
+16010 GOSUB 12475
+16015 IF LEFT$(B$, 5) = "CHDIR" THEN PRINT #2, "mov ah,59": GOTO 16030
+16020 IF LEFT$(B$, 5) = "MKDIR" THEN PRINT #2, "mov ah,57": GOTO 16030
+16025 PRINT #2, "mov ah,58"
+16030 PRINT #2, "call DIRF": GOTO 1705
+16035 REM ---- MIN/MAX COMMON PREAMBLE ----
+16040 I = D + 2
+16045 GOSUB 7575
+16050 JPAREN = J
+16055 K = I + 1
+16060 L = JPAREN - 1
+16065 GOSUB 7685
+16070 IF F = 0 THEN GOTO 5990
+16075 G = F
+16080 N$ = MID$(E$, I + 1, G - I - 1)
+16085 GOSUB 8445
+16090 N$ = MID$(E$, G + 1, JPAREN - G - 1)
+16095 GOSUB 8445
+16100 GOSUB 12175
+16105 GOSUB 12145
+16110 GOTO 12520
+16115 GOSUB 12160
+16120 D = JPAREN + 1
+16125 GOTO 6260
+16130 REM ---------- FILES [filespec$] ----------
+16135 IF LEN(B$) = 5 THEN GOTO 16165
+16140 IF MID$(B$, 6, 1) <> " " THEN GOTO 5990
+16145 X$ = MID$(B$, 7, LEN(B$) - 6)
+16150 X$ = TRIM$(X$): IF LEN(X$) = 0 THEN GOTO 5990
+16155 GOSUB 7780
+16160 GOSUB 12410: GOTO 16170
+16165 PRINT #2, "mov dx,OFFSET FLSALL"
+16170 GOSUB 12460
+16175 PRINT #2, "call FILESF": GOTO 1705
+16180 REM ---- LEFT$/RIGHT$ COMMON PREAMBLE ----
+16185 GOSUB 11770
+16190 E$ = X$
+16195 GOSUB 7575
+16200 K = I + 1
+16205 L = J - 1
+16210 GOSUB 7685
+16215 G = F
+16220 IF G = 0 THEN GOTO 5990
+16225 X$ = MID$(E$, I + 1, G - I - 1)
+16230 N$ = MID$(E$, G + 1, J - G - 1)
+16235 GOSUB 8445
+16240 E$ = X$
+16245 GOSUB 9140
+16250 GOTO 8485
+16255 GOSUB 12305
+16260 GOSUB 12190
+16265 GOTO 14995
+16270 REM ---- SIMPLE STRINGFUN COMMON PREAMBLE ----
+16275 GOTO 8530
+16280 GOTO 8565
+16285 REM ---- NUMSTRARG: set string argument to SI, set JPAREN ----
+16290 GOSUB 7575
+16295 JPAREN = J
+16300 X$ = MID$(E$, I + 1, JPAREN - I - 1)
+16305 GOTO 7780
+16310 REM ---------- SCREEN mode ----------
+16315 N$ = MID$(B$, 8, LEN(B$) - 7)
+16320 N$ = TRIM$(N$)
+16325 IF LEN(N$) = 0 THEN GOTO 5990
+16330 GOSUB 8445
+16335 GOSUB 12145
+16340 GOSUB 12490
+16345 PRINT #2, "call SCREENC"
+16350 GOTO 1705
+16355 REM ---------- PSET x,y,color ----------
+16360 E$ = MID$(B$, 6, LEN(B$) - 5)
+16365 E$ = TRIM$(E$)
+16370 IF LEN(E$) = 0 THEN GOTO 5990
+16375 K = 1: L = LEN(E$): GOSUB 7685
+16380 IF F = 0 THEN GOTO 5990
+16385 G = F: K = G + 1: L = LEN(E$): GOSUB 7685
+16390 IF F = 0 THEN GOTO 5990
+16395 H = F
+16400 N$ = MID$(E$, 1, G - 1): GOSUB 8445
+16405 N$ = MID$(E$, G + 1, H - G - 1): GOSUB 8445
+16410 N$ = MID$(E$, H + 1, LEN(E$) - H): N$ = TRIM$(N$)
+16415 IF LEN(N$) = 0 THEN GOTO 5990
+16420 GOSUB 8445
+16425 GOSUB 12145
+16430 PRINT #2, "mov dx,ax"
+16435 GOSUB 12175
+16440 GOSUB 12145
+16445 GOSUB 12490
+16450 PRINT #2, "call PSETC"
+16455 GOTO 1705
+16460 REM ---------- INP(port) ----------
+16465 I = D + 2
+16470 GOSUB 7575
+16475 JPAREN = J
+16480 N$ = MID$(E$, I + 1, JPAREN - I - 1)
+16485 N$ = TRIM$(N$)
+16490 IF LEN(N$) = 0 THEN GOTO 5990
+16495 GOSUB 8445
+16500 GOSUB 12145
+16505 PRINT #2, "mov dx,ax"
+16510 GOSUB 13190
+16515 PRINT #2, "call INPC"
+16520 GOSUB 12160
+16525 D = JPAREN + 1
+16530 GOTO 6260
+16535 REM ---------- OUT port,value ----------
+16540 D$ = MID$(B$, 4, LEN(B$) - 3)
+16545 D$ = TRIM$(D$)
+16550 IF LEN(D$) = 0 THEN GOTO 5990
+16555 E$ = D$
+16560 K = 1
+16565 L = LEN(E$)
+16570 GOSUB 7685
+16575 IF F = 0 THEN GOTO 5990
+16580 G = F
+16585 N$ = MID$(E$, 1, G - 1)
+16590 N$ = TRIM$(N$)
+16595 IF LEN(N$) = 0 THEN GOTO 5990
+16600 GOSUB 8445
+16605 N$ = MID$(E$, G + 1, LEN(E$) - G)
+16610 N$ = TRIM$(N$)
+16615 IF LEN(N$) = 0 THEN GOTO 5990
+16620 GOSUB 8445
+16625 GOSUB 12145
+16630 PRINT #2, "mov bx,ax"
+16635 GOSUB 12145
+16640 PRINT #2, "mov dx,ax"
+16645 PRINT #2, "mov ax,bx"
+16650 GOSUB 13190
+16655 PRINT #2, "call OUTC"
+16660 GOTO 1705
+16665 REM ---------- CALLINT intno, regarray ----------
+16670 D$ = MID$(B$, 8, LEN(B$) - 7)
+16675 D$ = TRIM$(D$)
+16680 IF LEN(D$) = 0 THEN GOTO 5990
+16685 E$ = D$
+16690 K = 1
+16695 L = LEN(E$)
+16700 GOSUB 7685
+16705 IF F = 0 THEN GOTO 5990
+16710 N$ = MID$(E$, 1, F - 1)
+16715 N$ = TRIM$(N$)
+16720 IF LEN(N$) = 0 THEN GOTO 5990
+16725 D$ = MID$(E$, F + 1, LEN(E$) - F)
+16730 D$ = TRIM$(D$)
+16735 IF LEN(D$) = 0 THEN GOTO 5990
+16740 GOSUB 8445
+16745 GOSUB 12145
+16750 E$ = D$
+16755 D = 1
+16760 GOSUB 6150
+16765 IF L$ = "" THEN GOTO 5990
+16770 IF H <> 0 THEN GOTO 5990
+16775 IF D <= LEN(E$) THEN GOTO 5990
+16780 PRINT #2, "DS "; L$
+16785 PRINT #2, "mov si,OFFSET S_"; L$
+16790 IF UIX = 0 THEN PRINT #2, "REQ IX": LET UIX = 1
+16795 PRINT #2, "call CALLINTC"
+16800 GOTO 1705
+16805 REM ---- COMMAND LINE PARSE / BUILD X$ INPUT AND Y$ OUTPUT ----
+16810 LET E = 0
+16815 IF LEN(X$) = 0 THEN LET E = 1: RETURN
+16820 IF X$ = "/?" THEN LET E = 1: RETURN
+16825 IF X$ = "/HELP" THEN LET E = 1: RETURN
+16830 IF X$ = "/help" THEN LET E = 1: RETURN
+16835 IF INSTR(X$, " ") <> 0 THEN LET E = 1: RETURN
+16840 LET I = LEN(X$): LET J = 0
+16845 IF I <= 0 THEN GOTO 16875
+16850 MC = ASC(MID$(X$, I, 1))
+16855 IF MC = 46 THEN LET J = I: GOTO 16875
+16860 IF MC = 92 THEN GOTO 16875
+16865 IF MC = 58 THEN GOTO 16875
+16870 LET I = I - 1: GOTO 16845
+16875 IF J <> 0 THEN LET Y$ = LEFT$(X$, J - 1) + ".ASM": RETURN
+16880 LET Y$ = X$ + ".ASM": LET X$ = X$ + ".BAS": RETURN
+16885 REM ---------- LINE (x1,y1)-(x2,y2),color[,B|BF] ----------
+16890 E$ = MID$(B$, 5, LEN(B$) - 4)
+16895 E$ = TRIM$(E$)
+16900 IF LEN(E$) = 0 THEN GOTO 5990
+16905 IF LEFT$(E$, 1) <> "(" THEN GOTO 5990
+16910 I = 1
+16915 GOSUB 7575
+16920 L1 = J
+16925 I = L1 + 1
+16930 IF I > LEN(E$) THEN GOTO 5990
+16935 IF MID$(E$, I, 1) = " " THEN I = I + 1: GOTO 16930
+16940 IF MID$(E$, I, 1) <> "-" THEN GOTO 5990
+16945 I = I + 1
+16950 IF I > LEN(E$) THEN GOTO 5990
+16955 IF MID$(E$, I, 1) = " " THEN I = I + 1: GOTO 16950
+16960 IF MID$(E$, I, 1) <> "(" THEN GOTO 5990
+16965 L2 = I
+16970 I = L2
+16975 GOSUB 7575
+16980 L3 = J
+16985 I = L3 + 1
+16990 IF I > LEN(E$) THEN GOTO 5990
+16995 IF MID$(E$, I, 1) = " " THEN I = I + 1: GOTO 16990
+17000 IF MID$(E$, I, 1) <> "," THEN GOTO 5990
+17005 L4 = I + 1
+17010 K = 2
+17015 L = L1 - 1
+17020 GOSUB 7685
+17025 IF F = 0 THEN GOTO 5990
+17030 L5 = F
+17035 K = L2 + 1
+17040 L = L3 - 1
+17045 GOSUB 7685
+17050 IF F = 0 THEN GOTO 5990
+17055 L6 = F
+17060 K = L4
+17065 L = LEN(E$)
+17070 GOSUB 7685
+17075 L7 = F
+17080 L8 = 0
+17085 IF L7 = 0 THEN GOTO 17115
+17090 K$ = MID$(E$, L7 + 1, LEN(E$) - L7)
+17095 K$ = TRIM$(K$)
+17100 IF K$ = "B" THEN L8 = 1: GOTO 17115
+17105 IF K$ = "BF" THEN L8 = 2: GOTO 17115
+17110 GOTO 5990
+17115 N$ = MID$(E$, 2, L5 - 2)
+17120 GOSUB 8445
+17125 N$ = MID$(E$, L5 + 1, L1 - L5 - 1)
+17130 GOSUB 8445
+17135 N$ = MID$(E$, L2 + 1, L6 - L2 - 1)
+17140 GOSUB 8445
+17145 N$ = MID$(E$, L6 + 1, L3 - L6 - 1)
+17150 GOSUB 8445
+17155 IF L7 = 0 THEN N$ = MID$(E$, L4, LEN(E$) - L4 + 1): GOTO 17170
+17160 N$ = MID$(E$, L4, L7 - L4)
+17165 N$ = TRIM$(N$)
+17170 IF LEN(N$) = 0 THEN GOTO 5990
+17175 GOSUB 8445
+17180 PRINT #2, "pop si"
+17185 PRINT #2, "pop dx"
+17190 PRINT #2, "pop cx"
+17195 PRINT #2, "pop bx"
+17200 PRINT #2, "pop ax"
+17205 PRINT #2, "mov di,"; L8
+17210 PRINT #2, "REQ LN"
+17215 PRINT #2, "call LINEC"
+17220 GOTO 1705
+17225 REM ---------- BEEP ----------
+17230 IF B$ <> "BEEP" THEN GOTO 5990
+17235 IF UBP = 0 THEN PRINT #2, "REQ BP": LET UBP = 1
+17240 PRINT #2, "call BEEPC"
+17245 GOTO 1705
+17250 REM ---------- CIRCLE (x,y),r[,color] ----------
+17255 E$ = B$
+17260 I = 8
+17265 IF I > LEN(E$) THEN GOTO 5990
+17267 CHAR = ASC(MID$(E$, I, 1))
+17270 IF CHAR = 32 THEN I = I + 1: GOTO 17265
+17275 IF CHAR <> 40 THEN GOTO 5990
+17280 L5 = I
+17285 GOSUB 7575
+17290 L1 = J
+17295 I = L1 + 1
+17300 IF I > LEN(E$) THEN GOTO 5990
+17302 CHAR = ASC(MID$(E$, I, 1))
+17305 IF CHAR = 32 THEN I = I + 1: GOTO 17300
+17310 IF CHAR <> 44 THEN GOTO 5990
+17315 L2 = I + 1
+17320 K = L5 + 1: L = L1 - 1: GOSUB 7685
+17325 IF F = 0 THEN GOTO 5990
+17330 L3 = F
+17335 K = L2: L = LEN(E$): GOSUB 7685
+17340 L4 = F
+17345 N$ = MID$(E$, L5 + 1, L3 - L5 - 1): GOSUB 8445
+17350 N$ = MID$(E$, L3 + 1, L1 - L3 - 1): GOSUB 8445
+17355 IF L4 = 0 THEN N$ = MID$(E$, L2, LEN(E$) - L2 + 1): GOTO 17365
+17360 N$ = MID$(E$, L2, L4 - L2)
+17365 GOSUB 8445
+17370 IF L4 = 0 THEN PRINT #2, "mov dx,15": GOTO 17400
+17375 N$ = MID$(E$, L4 + 1, LEN(E$) - L4)
+17380 GOSUB 8445
+17385 PRINT #2, "pop dx"
+17400 PRINT #2, "pop cx"
+17405 GOSUB 12175
+17410 GOSUB 12145
+17415 GOSUB 12490
+17420 PRINT #2, "call CIRCLEC"
+17425 GOTO 1705
+17430 REM ------------- DATAB -------------
+17435 D$ = MID$(B$, 6, LEN(B$) - 5)
+17440 V = A: GOSUB 1365: L$ = Q$
+17445 GOSUB 1305: I$ = Q$
+17450 PRINT #2, "jmp DBS"; I$
+17455 PRINT #2, "DB"; L$; ":"
+17460 K$ = "DB ": GOSUB 17620
+17465 PRINT #2, "DBS"; I$; ":": GOTO 1705
+17470 REM DATA = DATAW
+17475 D$ = MID$(B$, 5, LEN(B$) - 4)
+17480 GOSUB 17600
+17485 GOSUB 1305: I$ = Q$
+17490 PRINT #2, "jmp DTS"; I$
+17495 IF DA = 0 THEN PRINT #2, "DATA_BEGIN:" ELSE V = DA: GOSUB 1365: PRINT #2, "DTN"; Q$; ":"
+17500 GOSUB 1305: DA = V
+17505 PRINT #2, "DW DTN"; Q$
+17510 PRINT #2, "DW "; C
+17515 K$ = "DW ": GOSUB 17620: PRINT #2, "DTS"; I$; ":": GOTO 1705
+17520 REM READ numeric
+17525 D$ = TRIM$(MID$(B$, 5, LEN(B$) - 4))
+17530 E$ = D$: D = 1: GOSUB 6150
+17535 IF L$ = "" THEN GOTO 5990
+17540 IF H <> 0 THEN GOTO 6015
+17545 IF D <= LEN(E$) THEN GOTO 5990
+17546 IF UDA = 0 THEN PRINT #2, "REQ DA": UDA = 1
+17547 PRINT #2, "call READW"
+17548 PRINT #2, "DN "; L$
+17549 PRINT #2, "mov [N_"; L$; "],ax": GOTO 1705
+17550 REM RESTORE
+17555 D$ = TRIM$(MID$(B$, 8, LEN(B$) - 7))
+17560 IF LEN(D$) <> 0 THEN GOTO 5990
+17565 IF UDA = 0 THEN PRINT #2, "REQ DA": UDA = 1
+17570 PRINT #2, "mov WORD [DATREC],DATA_BEGIN": PRINT #2, "mov WORD [DATCNT],0": GOTO 1705
+17575 REM CALLDATA line
+17580 D$ = TRIM$(MID$(B$, 9, LEN(B$) - 8))
+17585 E = VAL(D$)
+17590 IF E = 0 THEN GOTO 6000
+17595 V = E: GOSUB 1365: PRINT #2, "call DB"; Q$: GOTO 1705
+17600 REM count comma-separated values in D$
+17605 D$ = TRIM$(D$): IF LEN(D$) = 0 THEN GOTO 5990
+17610 C = 1: I = 1
+17615 IF I > LEN(D$) THEN RETURN
+17616 IF MID$(D$, I, 1) = "," THEN C = C + 1
+17617 I = I + 1: GOTO 17615
+17620 REM emit comma-separated literal list in D$ with prefix K$
+17625 D$ = TRIM$(D$)
+17630 IF LEN(D$) = 0 THEN RETURN
+17635 I = INSTR(D$, ",")
+17640 IF I = 0 THEN N$ = D$: D$ = "": GOTO 17655
+17645 N$ = LEFT$(D$, I - 1)
+17650 D$ = MID$(D$, I + 1, LEN(D$) - I)
+17655 N$ = TRIM$(N$)
+17660 IF LEN(N$) = 0 THEN GOTO 5990
+17665 PRINT #2, K$; VAL(N$)
+17670 GOTO 17625
+17675 REM ---- DIM X$(COUNT) AS STRING * MAXLEN ----
+17680 E = 0: I = INSTR(D$, "$("): IF I = 0 THEN RETURN
+17685 IDTMP$ = LEFT$(D$, I - 1): IF LEN(IDTMP$) = 0 THEN GOTO 5990
+17690 E$ = D$: D = I + 1: GOSUB 7575
+17695 N$ = MID$(E$, D + 1, J - D - 1): X$ = LTRIM$(MID$(E$, J + 1, LEN(E$) - J))
+17700 IF LEFT$(X$, 12) <> "AS STRING * " THEN GOTO 5990
+17705 W$ = MID$(X$, 13, LEN(X$) - 12): GOSUB 8445: N$ = W$: GOSUB 8445
+17710 GOSUB 12175: GOSUB 12145: GOSUB 12535: PRINT #2, "call XAALLOC"
+17715 PRINT #2, "DN XA_"; IDTMP$: PRINT #2, "mov [N_XA_"; IDTMP$; "],ax": E = 1: RETURN
+17735 REM ---- EMIT XA HANDLE AND INDEX ON STACK ----
+17740 PRINT #2, "DN XA_"; IDTMP$: PRINT #2, "mov ax,[N_XA_"; IDTMP$; "]"
+17745 GOSUB 12160
+17750 GOSUB 8445
+17755 RETURN
+17760 REM ---- COMPILE X$(INDEX) TO SI ----
+17765 IDTMP$ = L$: I = D: GOSUB 7575: N$ = MID$(E$, D + 1, J - D - 1): GOSUB 17735
+17770 GOSUB 12175: GOSUB 12145: GOSUB 12240: GOSUB 12535: PRINT #2, "call XAGET": GOSUB 12225
+17775 D = J + 1: RETURN
+17780 REM ---- LET X$(INDEX)=STRINGEXPR ----
+17785 E = 0: I = INSTR(D$, "$("): IF I = 0 THEN RETURN
+17790 IF RIGHT$(D$, 1) <> ")" THEN GOTO 5990
+17795 IDTMP$ = LEFT$(D$, I - 1): IF LEN(IDTMP$) = 0 THEN GOTO 5990
+17800 N$ = MID$(D$, I + 2, LEN(D$) - I - 2): W$ = E$: GOSUB 17735
+17805 E$ = W$: GOSUB 9140
+17810 GOSUB 12175: GOSUB 12145: GOSUB 12535: PRINT #2, "call XASET": E = 1: RETURN

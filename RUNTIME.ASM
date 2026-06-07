@@ -1,5 +1,14 @@
-; Exit code for DOS 
+%ifdef USE_LN
+ %define USE_GR
+%endif
+
+; Exit code for DOS
 ; if a program has no END, execution stops here.
+ 
+RT_EXIT:
+%ifdef USE_GR
+  call GR_RESET
+%endif
   mov ah,4Ch
   int 21h
 
@@ -21,6 +30,16 @@ SV:
  %define USE_NB
  FH: times 9 dw 0    ; handle for channel 1..9
  FM: times 9 db 0    ; 0=closed, 1=INPUT, 2=OUTPUT
+%endif
+
+%ifdef USE_DR
+ %define USE_NB
+%endif
+
+%ifdef USE_FL
+ %define USE_NB
+ FLSALL db "*.*",0
+ FLDTA: times 43 db 0
 %endif
 
 %ifdef USE_PN
@@ -51,6 +70,55 @@ SV:
 %ifdef USE_XA
  %define USE_ST
  %define USE_TMP
+%endif
+
+%ifdef USE_IX
+ %define USE_AR
+%endif
+
+; =================================================
+; Shared runtime error / message helpers
+; =================================================
+%ifdef USE_DA
+ %define USE_RTE
+%endif
+%ifdef USE_MT
+ %define USE_RTE
+%endif
+%ifdef USE_FI
+ %define USE_RTE
+%endif
+%ifdef USE_DR
+ %define USE_RTE
+%endif
+%ifdef USE_BI
+ %define USE_RTE
+ %define USE_BV
+%endif
+%ifdef USE_PK
+ %define USE_RTE
+ %define USE_BV
+%endif
+%ifdef USE_IO
+ %define USE_RTE
+ %define USE_BV
+%endif
+%ifdef USE_XA
+ %define USE_RTE
+%endif
+%ifdef USE_AR
+ %define USE_RTE
+%endif
+%ifdef USE_IX
+ %define USE_RTE
+ %define USE_BV
+%endif
+
+%ifdef USE_DT
+ %define USE_D2
+%endif
+%ifdef USE_TS
+ %define USE_D2
 %endif
 
 ; =================================================
@@ -108,6 +176,30 @@ XALEN: times 16 dw 0 ; Slot size in bytes = maxlen+1
 
 %ifdef USE_PK
 PSEG dw 0
+%endif
+
+%ifdef USE_BV
+BVERR:
+ db "BYTE VALUE ERROR"
+%endif
+
+%ifdef USE_RTE
+; -------------------------------------------------
+; RT_ABORT
+; In : DX = message address
+;      CX = message length
+; Effect: writes message + CR/LF and terminates program
+; -------------------------------------------------
+RT_ABORT:
+ mov bx,1
+ mov ah,40h
+ int 21h
+ mov dx,OFFSET C
+ mov cx,2
+ mov bx,1
+ mov ah,40h
+ int 21h
+ jmp RT_EXIT
 %endif
 
 INIT_COMMAND:
@@ -192,6 +284,10 @@ ICMD_DONE:
  pop di
  pop si
 %endif
+
+%ifdef S_CURDIR
+ call CURDIR_UPDATE
+%endif
  ret
 
 %ifdef USE_MEM
@@ -272,8 +368,7 @@ RIGHT_OK:
   mov dl,bl
   sub dl,cl
   inc dl
-  call MID
-  ret
+  jmp MID
 
 LTRIM:
  xor cx,cx
@@ -674,8 +769,6 @@ MINS_DONE:
 ; -------------------------------------------------
 POWERR:
  db "NEGATIVE EXPONENT"
-POWCR:
- db 13,10
 
 POWS:
  push bx
@@ -701,16 +794,7 @@ POWS_LOOP:
 POWS_NEG:
  mov dx,OFFSET POWERR
  mov cx,17
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET POWCR
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
 POWS_DONE:
  pop dx
@@ -982,8 +1066,7 @@ INPUT_NOT_BS:
 INPUTS_DONE:
  pop di
  mov [di],cl
- call WRITE_CRLFH
- ret
+ jmp WRITE_CRLFH
 
 READ_LINEH:
  push ax
@@ -1098,8 +1181,7 @@ GETHOUT:
 EOFC:
  mov ah,1
  call GETHC
- call EOFH
- ret
+ jmp EOFH
 
 ; -------------------------------------------------
 ; In : AL = channel
@@ -1129,16 +1211,7 @@ CLOSEC_DONE:
 ; In : DX = message, CX = length
 ; -------------------------------------------------
 FI_ABORT:
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET C
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
 FI_BADCH:
  mov dx,OFFSET FICHERR
@@ -1291,6 +1364,228 @@ EOFH_RESTORE:
  ret
 %endif
 
+%ifdef USE_DR
+; -------------------------------------------------
+; DIRF - common CHDIR/MKDIR/RMDIR DOS call
+; In : AH    = DOS function number
+;              39h MKDIR, 3Ah RMDIR, 3Bh CHDIR
+;      DS:DX = ASCIIZ pathname
+; -------------------------------------------------
+DIRF:
+ push ax
+ int 21h
+ jnc DIRF_OK
+ pop ax
+ mov dx,OFFSET DIRERR
+ mov cx,15
+%ifdef USE_FI
+ jmp FI_ABORT
+%else
+ jmp RT_ABORT
+%endif
+
+DIRF_OK:
+ pop ax
+%ifdef S_CURDIR
+ cmp ah,59
+ jne DIRF_RET
+ call CURDIR_UPDATE
+DIRF_RET:
+%endif
+ ret
+DIRERR:
+ db "DIRECTORY ERROR"
+%endif
+
+%ifdef S_CURDIR
+; -------------------------------------------------
+; CURDIR_UPDATE
+; Effect:
+;   Updates S_CURDIR as counted string with current drive/path.
+;   Format: "C:\" or "C:\DIR\SUB"
+;
+; Uses:
+;   DOS AH=19h -> current drive, AL=0 for A:
+;   DOS AH=47h -> current directory into DS:SI
+;                 for DL=0 default drive
+; -------------------------------------------------
+CURDIR_UPDATE:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+ push di
+
+ mov di,OFFSET S_CURDIR
+
+ ; drive letter
+ mov ah,19h
+ int 21h
+ add al,'A'
+ mov [di+1],al
+ mov BYTE [di+2],':'
+ mov BYTE [di+3],'\'
+
+ ; get current directory without drive into S_CURDIR+4
+ mov si,di
+ add si,4
+ mov dl,0
+ mov ah,47h
+ int 21h
+ jc CURDIR_EMPTY
+
+ ; length = 3 + strlen(path returned by AH=47h)
+ mov cx,3
+CURDIR_LEN:
+ cmp BYTE [si],0
+ je CURDIR_DONE
+ inc si
+ inc cx
+ cmp cx,255
+ jb CURDIR_LEN
+ jmp CURDIR_DONE
+
+CURDIR_EMPTY:
+ mov cx,3
+
+CURDIR_DONE:
+ mov [di],cl
+
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+%endif
+
+%ifdef USE_FL
+; -------------------------------------------------
+; FILESF - QuickBASIC-style FILES [filespec$]
+; In : DS:DX = ASCIIZ filespec, or FLSALL for default *.*
+; Out: writes matching file names to DOS stdout, one per line
+;
+; DTA layout used here:
+;   FLDTA+21 = attribute byte of matching file
+;   FLDTA+30 = ASCIIZ filename
+;
+; Attribute mask:
+;   CX = 10h -> include directory entries in addition to normal files
+; -------------------------------------------------
+FILESF:
+ push dx
+ mov dx,OFFSET FLDTA
+ mov ah,1Ah
+ int 21h
+ pop dx
+
+ mov cx,10h
+ mov ah,4Eh
+ int 21h
+ jc FILES_DONE
+
+FILES_LOOP:
+ call FILES_PRINT
+ mov ah,4Fh
+ int 21h
+ jnc FILES_LOOP
+
+FILES_DONE:
+ ret
+
+FILES_PRINT:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+
+ mov si,OFFSET FLDTA+30
+
+ ; skip "."
+ cmp BYTE [si],'.'
+ jne FILES_NOT_DOT
+ cmp BYTE [si+1],0
+ je FILES_PR_DONE
+
+ ; skip ".."
+ cmp BYTE [si+1],'.'
+ jne FILES_NOT_DOT
+ cmp BYTE [si+2],0
+ je FILES_PR_DONE
+
+FILES_NOT_DOT:
+ xor cx,cx
+
+FILES_LEN:
+ cmp BYTE [si],0
+ je FILES_OUT_NAME
+ inc si
+ inc cx
+ cmp cx,13
+ jb FILES_LEN
+
+FILES_OUT_NAME:
+ ; If directory attribute bit is set, print [name]
+ mov si,OFFSET FLDTA
+ mov al,[si+21]
+ and al,10h
+ je FILES_OUT_PL
+
+ ; Directory: write "["
+ push cx
+ mov dx,OFFSET FLBRA
+ mov cx,1
+ mov bx,1
+ mov ah,40h
+ int 21h
+ pop cx
+
+ ; Directory: write name
+ mov dx,OFFSET FLDTA+30
+ mov bx,1
+ mov ah,40h
+ int 21h
+
+ ; Directory: write "]"
+ mov dx,OFFSET FLBRZ
+ mov cx,1
+ mov bx,1
+ mov ah,40h
+ int 21h
+
+ jmp FILES_CRLF
+
+FILES_OUT_PL:
+ ; Normal file: write name only
+ mov dx,OFFSET FLDTA+30
+ mov bx,1
+ mov ah,40h
+ int 21h
+
+FILES_CRLF:
+ mov dx,OFFSET C
+ mov cx,2
+ mov bx,1
+ mov ah,40h
+ int 21h
+
+FILES_PR_DONE:
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+
+FLBRA:
+ db "["
+FLBRZ:
+ db "]"
+%endif
+
 %ifdef USE_SO
 CATTR db 07h
 
@@ -1341,6 +1636,522 @@ LOCATEC:
 LOCATEC_DONE:
  ret
 
+%endif
+
+%ifdef USE_GR
+; =================================================
+; SCREEN / PSET graphics support
+;
+; SCREENC: AX = BASIC screen mode
+;   0 -> BIOS mode 03h, 1 -> 04h, 2 -> 06h,
+;   all other values are passed in AL as BIOS mode.
+;
+;   supported modes:
+;   SCREEN 0  -> BIOS mode 03h
+;   SCREEN 1  -> BIOS mode 04h
+;   SCREEN 2  -> BIOS mode 06h
+;   SCREEN 13 -> BIOS mode 13h
+;
+; PSETC: AX = x, BX = y, DX = color
+;   Uses BIOS INT 10h AH=0Ch, page 0.
+;
+; CIRCLEC: AX = center x, BX = center y, CX = radius, DX = color
+;   Draws an integer outline circle using PSETC.
+;
+; =================================================
+GR_USED db 0
+
+SCREENC:
+ cmp ax,0
+ jne SCR_N0
+ mov al,3
+ jmp SCR_SET
+SCR_N0:
+ cmp ax,1
+ jne SCR_N1
+ mov al,4
+ jmp SCR_SET
+SCR_N1:
+ cmp ax,2
+ jne SCR_SET
+ mov al,6
+SCR_SET:
+ mov ah,00h
+ int 10h
+ mov BYTE [GR_USED],1
+ ret
+
+PSETC:
+ push ax
+ push bx
+ push cx
+ push dx
+ mov cx,ax
+ push dx
+ mov dx,bx
+ pop ax
+ xor bx,bx
+ mov ah,0Ch
+ int 10h
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+
+; -------------------------------------------------
+; CIRCLEC
+; In:
+;   AX = center x
+;   BX = center y
+;   CX = radius
+;   DX = color
+; Effect:
+;   Draws an outline circle using integer midpoint algorithm.
+;   Uses PSETC internally.
+;   Negative radius draws nothing.
+; -------------------------------------------------
+
+GC_CX   dw 0
+GC_CY   dw 0
+GC_COL  dw 0
+GC_X    dw 0
+GC_Y    dw 0
+GC_D    dw 0
+
+CIRCLEC:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+ push di
+
+ cmp cx,0
+ jl CIRCLEC_DONE
+
+ mov [GC_CX],ax
+ mov [GC_CY],bx
+ mov [GC_COL],dx
+ mov WORD [GC_X],0
+ mov [GC_Y],cx
+
+ ; d = 3 - 2*r
+ mov ax,3
+ sub ax,cx
+ sub ax,cx
+ mov [GC_D],ax
+
+CIRCLE_LOOP:
+ mov ax,[GC_X]
+ mov bx,[GC_Y]
+ cmp ax,bx
+ jg CIRCLEC_DONE
+
+ call CIRCLE_PLOT8
+
+ mov ax,[GC_D]
+ cmp ax,0
+ jge CIRCLE_DECY
+
+ ; d = d + 4*x + 6
+ mov ax,[GC_X]
+ shl ax,1
+ shl ax,1
+ add ax,6
+ mov bx,[GC_D]
+ add bx,ax
+ mov [GC_D],bx
+ jmp CIRCLE_INCX
+
+CIRCLE_DECY:
+ ; d = d + 4*(x-y) + 10
+ mov ax,[GC_X]
+ mov bx,[GC_Y]
+ sub ax,bx
+ shl ax,1
+ shl ax,1
+ add ax,10
+ mov bx,[GC_D]
+ add bx,ax
+ mov [GC_D],bx
+
+ mov ax,[GC_Y]
+ dec ax
+ mov [GC_Y],ax
+
+CIRCLE_INCX:
+ mov ax,[GC_X]
+ inc ax
+ mov [GC_X],ax
+ jmp CIRCLE_LOOP
+
+CIRCLEC_DONE:
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+
+; -------------------------------------------------
+; CIRCLE_PLOT8
+; Plots the eight symmetric points for current GC_X/GC_Y.
+; Uses PSETC.
+; -------------------------------------------------
+
+CIRCLE_PLOT8:
+ mov si,[GC_X]
+ mov di,[GC_Y]
+
+ ; cx+x, cy+y
+ mov ax,[GC_CX]
+ add ax,si
+ mov bx,[GC_CY]
+ add bx,di
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx-x, cy+y
+ mov ax,[GC_CX]
+ sub ax,si
+ mov bx,[GC_CY]
+ add bx,di
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx+x, cy-y
+ mov ax,[GC_CX]
+ add ax,si
+ mov bx,[GC_CY]
+ sub bx,di
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx-x, cy-y
+ mov ax,[GC_CX]
+ sub ax,si
+ mov bx,[GC_CY]
+ sub bx,di
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx+y, cy+x
+ mov ax,[GC_CX]
+ add ax,di
+ mov bx,[GC_CY]
+ add bx,si
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx-y, cy+x
+ mov ax,[GC_CX]
+ sub ax,di
+ mov bx,[GC_CY]
+ add bx,si
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx+y, cy-x
+ mov ax,[GC_CX]
+ add ax,di
+ mov bx,[GC_CY]
+ sub bx,si
+ mov dx,[GC_COL]
+ call PSETC
+
+ ; cx-y, cy-x
+ mov ax,[GC_CX]
+ sub ax,di
+ mov bx,[GC_CY]
+ sub bx,si
+ mov dx,[GC_COL]
+ call PSETC
+
+ ret
+ 
+ 
+; -------------------------------------------------
+; GR_RESET
+; Effect:
+;   If SCREEN was used, restore text mode 03h.
+;   BIOS mode set to 03h also clears the screen.
+; -------------------------------------------------
+GR_RESET:
+ cmp BYTE [GR_USED],0
+ je GR_RESET_DONE
+ mov BYTE [GR_USED],0
+ mov ax,0003h
+ int 10h
+GR_RESET_DONE:
+ ret
+%endif
+
+%ifdef USE_LN
+; -------------------------------------------------
+; LINEC
+; In:
+;   AX = x1
+;   BX = y1
+;   CX = x2
+;   DX = y2
+;   SI = color
+;   DI = mode
+;        0 = line
+;        1 = box
+;        2 = filled box
+; Effect:
+;   Draws a line, rectangle, or filled rectangle.
+;   Uses PSETC internally.
+; -------------------------------------------------
+
+GL_X1   dw 0
+GL_Y1   dw 0
+GL_X2   dw 0
+GL_Y2   dw 0
+GL_OX1  dw 0
+GL_OY1  dw 0
+GL_OX2  dw 0
+GL_OY2  dw 0
+GL_COL  dw 0
+GL_DX   dw 0
+GL_DY   dw 0
+GL_SX   dw 0
+GL_SY   dw 0
+GL_ERR  dw 0
+GL_E2   dw 0
+GL_YC   dw 0
+
+LINEC:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+ push di
+
+ mov [GL_OX1],ax
+ mov [GL_OY1],bx
+ mov [GL_OX2],cx
+ mov [GL_OY2],dx
+ mov [GL_COL],si
+
+ cmp di,1
+ je LINEC_BOX
+ cmp di,2
+ je LINEC_FILL
+
+ mov [GL_X1],ax
+ mov [GL_Y1],bx
+ mov [GL_X2],cx
+ mov [GL_Y2],dx
+ call LINE_D_STORED
+ jmp LINEC_DONE
+
+LINEC_BOX:
+ ; top: (x1,y1)-(x2,y1)
+ mov ax,[GL_OX1]
+ mov [GL_X1],ax
+ mov ax,[GL_OY1]
+ mov [GL_Y1],ax
+ mov ax,[GL_OX2]
+ mov [GL_X2],ax
+ mov ax,[GL_OY1]
+ mov [GL_Y2],ax
+ call LINE_D_STORED
+
+ ; right: (x2,y1)-(x2,y2)
+ mov ax,[GL_OX2]
+ mov [GL_X1],ax
+ mov ax,[GL_OY1]
+ mov [GL_Y1],ax
+ mov ax,[GL_OX2]
+ mov [GL_X2],ax
+ mov ax,[GL_OY2]
+ mov [GL_Y2],ax
+ call LINE_D_STORED
+
+ ; bottom: (x2,y2)-(x1,y2)
+ mov ax,[GL_OX2]
+ mov [GL_X1],ax
+ mov ax,[GL_OY2]
+ mov [GL_Y1],ax
+ mov ax,[GL_OX1]
+ mov [GL_X2],ax
+ mov ax,[GL_OY2]
+ mov [GL_Y2],ax
+ call LINE_D_STORED
+
+ ; left: (x1,y2)-(x1,y1)
+ mov ax,[GL_OX1]
+ mov [GL_X1],ax
+ mov ax,[GL_OY2]
+ mov [GL_Y1],ax
+ mov ax,[GL_OX1]
+ mov [GL_X2],ax
+ mov ax,[GL_OY1]
+ mov [GL_Y2],ax
+ call LINE_D_STORED
+
+ jmp LINEC_DONE
+
+LINEC_FILL:
+ ; normalize x1/x2
+ mov ax,[GL_OX1]
+ mov cx,[GL_OX2]
+ cmp ax,cx
+ jle LINEC_FILL_XOK
+ mov bx,[GL_OX2]
+ mov [GL_OX1],bx
+ mov [GL_OX2],ax
+LINEC_FILL_XOK:
+
+ ; normalize y1/y2
+ mov ax,[GL_OY1]
+ mov cx,[GL_OY2]
+ cmp ax,cx
+ jle LINEC_FILL_YOK
+ mov bx,[GL_OY2]
+ mov [GL_OY1],bx
+ mov [GL_OY2],ax
+LINEC_FILL_YOK:
+
+ mov ax,[GL_OY1]
+ mov [GL_YC],ax
+
+LINEC_FL_LOOP:
+ mov ax,[GL_YC]
+ mov cx,[GL_OY2]
+ cmp ax,cx
+ jg LINEC_DONE
+
+ mov ax,[GL_OX1]
+ mov [GL_X1],ax
+ mov ax,[GL_YC]
+ mov [GL_Y1],ax
+ mov ax,[GL_OX2]
+ mov [GL_X2],ax
+ mov ax,[GL_YC]
+ mov [GL_Y2],ax
+
+ call LINE_D_STORED
+
+ mov ax,[GL_YC]
+ inc ax
+ mov [GL_YC],ax
+ jmp LINEC_FL_LOOP
+
+LINEC_DONE:
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+
+; -------------------------------------------------
+; LINE_D_STORED
+; Uses:
+;   GL_X1, GL_Y1, GL_X2, GL_Y2, GL_COL
+; Draws line using integer Bresenham.
+; Mutates GL_X1 / GL_Y1 while drawing.
+; Avoids ALU reg,[mem] forms for BASM compatibility.
+; -------------------------------------------------
+LINE_D_STORED:
+ ; dx = abs(x2-x1), sx = sign(x2-x1)
+ mov ax,[GL_X2]
+ mov cx,[GL_X1]
+ sub ax,cx
+ mov WORD [GL_SX],1
+ cmp ax,0
+ jge LDS_DX_OK
+ neg ax
+ mov WORD [GL_SX],-1
+LDS_DX_OK:
+ mov [GL_DX],ax
+
+ ; dy = -abs(y2-y1), sy = sign(y2-y1)
+ mov ax,[GL_Y2]
+ mov cx,[GL_Y1]
+ sub ax,cx
+ mov WORD [GL_SY],1
+ cmp ax,0
+ jge LDS_DY_POS
+ neg ax
+ mov WORD [GL_SY],-1
+LDS_DY_POS:
+ neg ax
+ mov [GL_DY],ax
+
+ ; err = dx + dy
+ mov ax,[GL_DX]
+ mov cx,[GL_DY]
+ add ax,cx
+ mov [GL_ERR],ax
+
+LDS_LOOP:
+ ; plot current point
+ mov ax,[GL_X1]
+ mov bx,[GL_Y1]
+ mov dx,[GL_COL]
+ call PSETC
+
+ ; done if current == target
+ mov ax,[GL_X1]
+ mov cx,[GL_X2]
+ cmp ax,cx
+ jne LDS_CONT
+ mov ax,[GL_Y1]
+ mov cx,[GL_Y2]
+ cmp ax,cx
+ je LDS_DONE
+
+LDS_CONT:
+ ; e2 = 2*err
+ mov ax,[GL_ERR]
+ add ax,ax
+ mov [GL_E2],ax
+
+ ; if e2 >= dy then err += dy, x += sx
+ mov ax,[GL_E2]
+ mov cx,[GL_DY]
+ cmp ax,cx
+ jl LDS_SKIP_X
+
+ mov ax,[GL_ERR]
+ mov cx,[GL_DY]
+ add ax,cx
+ mov [GL_ERR],ax
+
+ mov ax,[GL_X1]
+ mov cx,[GL_SX]
+ add ax,cx
+ mov [GL_X1],ax
+
+LDS_SKIP_X:
+ ; if e2 <= dx then err += dx, y += sy
+ mov ax,[GL_E2]
+ mov cx,[GL_DX]
+ cmp ax,cx
+ jg LDS_SKIP_Y
+
+ mov ax,[GL_ERR]
+ mov cx,[GL_DX]
+ add ax,cx
+ mov [GL_ERR],ax
+
+ mov ax,[GL_Y1]
+ mov cx,[GL_SY]
+ add ax,cx
+ mov [GL_Y1],ax
+
+LDS_SKIP_Y:
+ jmp LDS_LOOP
+
+LDS_DONE:
+ ret
 %endif
 
 %ifdef USE_PR
@@ -1602,29 +2413,11 @@ WRITEB_DONE:
  pop bx
  ret
  
-WRITEB_ERR:
- pop dx
- pop cx
- pop bx
- mov dx,OFFSET BI_WRERR
- mov cx,16
- jmp BI_ABORT
 WRITEB_VALERR:
- mov dx,OFFSET BI_VALERR
+ mov dx,OFFSET BVERR
  mov cx,16
- jmp BI_ABORT
-
 BI_ABORT:
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET C
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
 ; -------------------------------------------------
 ; BIFLUSH - writes buffered byte block
@@ -1666,10 +2459,6 @@ BIFLUSH_ERR:
  mov cx,16
  jmp BI_ABORT
  
-; Workaround: BASM places the following label in the generated code
- ; currently 2 bytes too early, directly on the short JMP.
- ; Two NOPs make both cases harmless.
- db 144,144
  
 ; -------------------------------------------------
 ; BIFLUSH_IF_BX - flush only if the handle matches
@@ -1681,8 +2470,7 @@ BIFLUSH_IF_BX:
  cmp bx,[BIBH]
  jne BIFIB_DONE
  pop ax
- call BIFLUSH
- ret
+ jmp BIFLUSH
 
 BIFIB_DONE:
  pop ax
@@ -1696,8 +2484,6 @@ BI_RDERR:
  db "FILE READ ERROR"
 BI_WRERR:
  db "FILE WRITE ERROR"
-BI_VALERR:
- db "BYTE VALUE ERROR"
 %endif
 
 %ifdef USE_PK
@@ -1761,21 +2547,42 @@ POKEC:
  ret
 
 PK_VALERR:
- mov dx,OFFSET PKVERR
+ mov dx,OFFSET BVERR
  mov cx,16
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET C
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
-PKVERR:
- db "BYTE VALUE ERROR"
+%endif
+
+%ifdef USE_IO
+; =================================================
+; INP / OUT port I/O
+;
+; INPC:
+;   In : DX = port
+;   Out: AX = byte 0..255 read from port
+;
+; OUTC:
+;   In : DX = port
+;        AX = byte value 0..255
+;   Effect: writes AL to port DX
+; =================================================
+
+INPC:
+ DB 236              ; IN AL,DX
+ xor ah,ah
+ ret
+
+OUTC:
+ cmp ah,0
+ jne IO_VALERR
+ DB 238              ; OUT DX,AL
+ ret
+
+IO_VALERR:
+ mov dx,OFFSET BVERR
+ mov cx,16
+ jmp RT_ABORT
+
 %endif
 
 %ifdef USE_XA
@@ -1802,16 +2609,7 @@ XAERR:
  db "XARRAY ERROR"
 
 XA_ABORT:
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET C
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
 ; -------------------------------------------------
 ; XAALLOC
@@ -2172,16 +2970,7 @@ XICNT: times 16 dw 0
 ;   CX = length
 ; -------------------------------------------------
 ARR_ABORT:
- mov bx,1
- mov ah,40h
- int 21h
- mov dx,OFFSET C
- mov cx,2
- mov bx,1
- mov ah,40h
- int 21h
- mov ah,4Ch
- int 21h
+ jmp RT_ABORT
 
 ARR_SIZE_ERR:
  mov dx,OFFSET ARRDERR
@@ -2653,6 +3442,28 @@ TM_MM db 0
 TM_SS db 0
 %endif
 
+%ifdef USE_D2
+; -------------------------------------------------
+; D2_TWO
+; In : AL = value 0..99
+; Out: two decimal digits to [DI], DI += 2
+; Uses: AX, BX, DX
+; -------------------------------------------------
+D2_TWO:
+ xor ah,ah
+ xor dx,dx
+ mov bx,10
+ div bx              ; AX = tens, DX = ones
+ add al,'0'
+ mov [di],al
+ inc di
+ mov al,dl
+ add al,'0'
+ mov [di],al
+ inc di
+ ret
+%endif
+
 %ifdef USE_DT
 ; =================================================
 ; DATE$ / DATES
@@ -2688,14 +3499,14 @@ DATES:
 
  ; month DH -> two digits
  mov al,dh
- call DT_TWO
+ call D2_TWO
 
  mov BYTE PTR [di],'-'
  inc di
 
  ; day DL -> two digits
  mov al,dl
- call DT_TWO
+ call D2_TWO
 
  mov BYTE PTR [di],'-'
  inc di
@@ -2709,25 +3520,6 @@ DATES:
  pop cx
  pop bx
  pop ax
- ret
-
-; -------------------------------------------------
-; DT_TWO
-; In : AL = value 0..99
-; Out: two decimal digits to [DI], DI += 2
-; -------------------------------------------------
-DT_TWO:
- xor ah,ah
- xor dx,dx
- mov bx,10
- div bx              ; AX = tens, DX = ones
- add al,'0'
- mov [di],al
- inc di
- mov al,dl
- add al,'0'
- mov [di],al
- inc di
  ret
 
 ; -------------------------------------------------
@@ -2802,46 +3594,27 @@ TIMESTR:
 
  ; hour CH -> two digits
  mov al,ch
- call TS_TWO
+ call D2_TWO
 
  mov BYTE PTR [di],':'
  inc di
 
  ; minute CL -> two digits
  mov al,cl
- call TS_TWO
+ call D2_TWO
 
  mov BYTE PTR [di],':'
  inc di
 
  ; second DH -> two digits
  mov al,dh
- call TS_TWO
+ call D2_TWO
 
  pop di
  pop dx
  pop cx
  pop bx
  pop ax
- ret
-
-; -------------------------------------------------
-; TS_TWO
-; In : AL = value 0..99
-; Out: two decimal digits to [DI], DI += 2
-; -------------------------------------------------
-TS_TWO:
- xor ah,ah
- xor dx,dx
- mov bx,10
- div bx              ; AX = tens, DX = ones
- add al,'0'
- mov [di],al
- inc di
- mov al,dl
- add al,'0'
- mov [di],al
- inc di
  ret
 %endif
 
@@ -3238,7 +4011,6 @@ CP_FAM6:
 
 CP_FAMF:
  mov ax,1500
- jmp CP_RET
 
 CP_RET:
  ; Restore 16-bit FLAGS and preserve result AX.
@@ -3250,6 +4022,192 @@ CP_RET:
  ret
 
 CP_FLG dw 0
+%endif
+
+%ifdef USE_IX
+; =================================================
+; CALLINT intno, regs()
+;
+; In:
+;   AX = interrupt number, must be 0..255
+;   SI = descriptor/address of numeric array regs()
+;
+; regs(1) = AX
+; regs(2) = BX
+; regs(3) = CX
+; regs(4) = DX
+; regs(5) = SI
+; regs(6) = DI
+; regs(7) = FLAGS output only
+;
+; Segment registers are intentionally not user-settable
+; in this minimal version.
+; =================================================
+
+IX_NO    db 0
+IX_DESC  dw 0
+IX_AX    dw 0
+IX_BX    dw 0
+IX_CX    dw 0
+IX_DX    dw 0
+IX_SI    dw 0
+IX_DI    dw 0
+IX_FL    dw 0
+
+CALLINTC:
+ cmp ah,0
+ jne IX_VALERR
+ mov [IX_NO],al
+ mov [IX_DESC],si
+
+ ; --- read register block from BASIC array ---
+ mov ax,1
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_AX],ax
+
+ mov ax,2
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_BX],ax
+
+ mov ax,3
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_CX],ax
+
+ mov ax,4
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_DX],ax
+
+ mov ax,5
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_SI],ax
+
+ mov ax,6
+ mov si,[IX_DESC]
+ call ARRGETB
+ mov [IX_DI],ax
+
+ ; --- patch interrupt opcode operand ---
+ mov al,[IX_NO]
+ mov [IX_INT+1],al
+
+ ; --- load CPU registers ---
+ mov ax,[IX_AX]
+ mov bx,[IX_BX]
+ mov cx,[IX_CX]
+ mov dx,[IX_DX]
+ mov si,[IX_SI]
+ mov di,[IX_DI]
+
+IX_INT:
+ DB 205,0              ; INT imm8, immediate byte is patched above
+
+ ; Capture FLAGS before any flag-changing instruction.
+ DB 156                ; PUSHF
+ push cs
+ pop ds                ; restore program data segment
+ push cs
+ pop es                ; keep ES consistent with program segment
+
+ mov [IX_AX],ax
+ pop ax
+ mov [IX_FL],ax
+
+ mov [IX_BX],bx
+ mov [IX_CX],cx
+ mov [IX_DX],dx
+ mov [IX_SI],si
+ mov [IX_DI],di
+
+ ; --- write result block back to BASIC array ---
+ mov si,[IX_DESC]
+ mov bx,1
+ mov ax,[IX_AX]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,2
+ mov ax,[IX_BX]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,3
+ mov ax,[IX_CX]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,4
+ mov ax,[IX_DX]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,5
+ mov ax,[IX_SI]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,6
+ mov ax,[IX_DI]
+ call ARRSETB
+
+ mov si,[IX_DESC]
+ mov bx,7
+ mov ax,[IX_FL]
+ jmp ARRSETB
+
+IX_VALERR:
+ mov dx,OFFSET BVERR
+ mov cx,16
+ jmp RT_ABORT
+%endif
+
+%ifdef USE_BP
+BEEPC:
+ mov ah,02h
+ mov dl,7
+ int 21h
+ ret
+%endif
+
+%ifdef USE_DA
+DATREC dw DATA_BEGIN
+DATCNT dw 0
+DATPTR dw 0
+
+READW:
+ cmp WORD [DATCNT],0
+ jne READW_HAVE
+ mov bx,[DATREC]
+ cmp bx,0
+ je READW_OOD
+ mov ax,[bx]
+ mov [DATREC],ax
+ mov ax,[bx+2]
+ cmp ax,0
+ je READW_OOD
+ mov [DATCNT],ax
+ add bx,4
+ mov [DATPTR],bx
+
+READW_HAVE:
+ mov bx,[DATPTR]
+ mov ax,[bx]
+ add bx,2
+ mov [DATPTR],bx
+ dec WORD [DATCNT]
+ ret
+
+READW_OOD:
+ mov dx,OFFSET DAERR
+ mov cx,11
+ jmp RT_ABORT
+
+DAERR:
+ db "OUT OF DATA"
 %endif
 
 %ifdef USE_MEM
