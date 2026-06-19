@@ -11,18 +11,41 @@ call INIT_COMMAND
 jmp s2
 %assign __N 0
 %assign __S 0
+
 %macro DN 1
 %ifndef N_%1
 %xdefine N_%1 NV + __N
 %assign __N __N + 2
 %endif
 %endmacro
+
 %macro DS 1
 %ifndef S_%1
 %xdefine S_%1 SV + __S
 %assign __S __S + 256
 %endif
 %endmacro
+
+%macro DSLEN 2
+%ifndef S_%1
+%xdefine S_%1 SV + __S
+%assign __S __S + %2 + 1
+%endif
+%endmacro
+
+%macro DSA 2
+%ifndef S_%1
+%xdefine S_%1 SV + __S
+%if %2 < 1
+%assign __S __S + 2
+%elif %2 <= 127
+%assign __S __S + 1 + 2 * %2
+%else
+%assign __S __S + 2
+%endif
+%endif
+%endmacro
+
 %macro REQ 1
  %ifndef USE_%1
   %define USE_%1
@@ -62,7 +85,7 @@ BASBAN3:
  times 197 db 0
 
 BASBAN4:
- db 58," |    |   \ / __ \_\___ \\ 2.1 \___(  <_> )  Y Y  \  |_> >"
+ db 58," |    |   \ / __ \_\___ \\ 2.2 \___(  <_> )  Y Y  \  |_> >"
  times 197 db 0
 
 BASBAN5:

@@ -6,8 +6,13 @@
 ; if a program has no END, execution stops here.
  
 RT_EXIT:
+  xor al,al
+
+RT_EXIT_AL:
 %ifdef USE_GR
+  push ax
   call GR_RESET
+  pop ax
 %endif
   mov ah,4Ch
   int 21h
@@ -46,6 +51,12 @@ SV:
  %define USE_NB
 %endif
 
+%ifdef USE_HX
+ %define USE_ST
+%endif
+%ifdef USE_SR
+ %define USE_ST
+%endif
 %ifdef USE_ST
  %define USE_TMP
 %endif
@@ -199,7 +210,8 @@ RT_ABORT:
  mov bx,1
  mov ah,40h
  int 21h
- jmp RT_EXIT
+ mov al,10
+ jmp RT_EXIT_AL
 %endif
 
 INIT_COMMAND:
@@ -223,6 +235,10 @@ INIT_COMMAND:
  sti
 
  push bx                 ; return address on new stack
+%endif
+
+%ifdef S_PROGDIR
+ call PROGDIR_INIT
 %endif
 
 %ifdef USE_RN
@@ -289,6 +305,152 @@ ICMD_DONE:
  call CURDIR_UPDATE
 %endif
  ret
+
+%ifdef S_PROGDIR
+; -------------------------------------------------
+; PROGDIR_INIT
+; Effect:
+;   Initializes PROGDIR$ with the directory of the
+;   currently running COM program.
+;
+; Output:
+;   S_PROGDIR = counted string:
+;      "C:\TOOLS\" for "C:\TOOLS\BASCOMP.COM"
+;      "C:"       for "C:BASCOMP.COM"
+;      ""         if no path information is available
+;
+; Notes:
+;   Uses the DOS 3.x+ convention that the environment
+;   block contains the fully qualified program name
+;   after the double-zero environment terminator and
+;   one following word.
+; -------------------------------------------------
+PROGDIR_INIT:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+ push di
+ push ds
+ push es
+
+ push cs
+ pop ds
+
+ ; default: PROGDIR$ = ""
+ mov di,OFFSET S_PROGDIR
+ mov BYTE [di],0
+
+ ; PSP:2Ch = environment segment
+ mov ax,[2Ch]
+ cmp ax,0
+ je PGD_DONE
+
+ mov es,ax
+ xor bx,bx
+
+; -------------------------------------------------
+; Find double-zero terminator of environment strings.
+; Environment layout:
+;   VAR=VALUE,0
+;   VAR=VALUE,0
+;   0
+;   word
+;   program path,0
+; -------------------------------------------------
+PGD_ENV_SCAN:
+ cmp bx,0FFF0h
+ jae PGD_DONE
+
+ mov al,[es:bx]
+ cmp al,0
+ jne PGD_SKIP_STR
+
+ cmp BYTE [es:bx+1],0
+ je PGD_ENV_END
+
+ inc bx
+ jmp PGD_ENV_SCAN
+
+PGD_SKIP_STR:
+ cmp bx,0FFF0h
+ jae PGD_DONE
+ cmp BYTE [es:bx],0
+ je PGD_AFTER_STR
+ inc bx
+ jmp PGD_SKIP_STR
+
+PGD_AFTER_STR:
+ jmp PGD_ENV_SCAN
+
+PGD_ENV_END:
+ ; skip double zero
+ add bx,2
+
+ ; skip word before program name
+ add bx,2
+
+ ; ES:BX now points to ASCIIZ program path if available.
+ ; Scan path and remember length up to last separator.
+ xor cx,cx              ; total chars scanned
+ xor dx,dx              ; directory length to copy
+ mov si,bx
+
+PGD_PATH_SCAN:
+ cmp cx,255
+ jae PGD_COPY
+
+ mov al,[es:si]
+ cmp al,0
+ je PGD_COPY
+
+ inc cx
+ inc si
+
+ cmp al,'\'
+ je PGD_SETLEN
+ cmp al,'/'
+ je PGD_SETLEN
+ cmp al,':'
+ je PGD_SETLEN
+
+ jmp PGD_PATH_SCAN
+
+PGD_SETLEN:
+ mov dx,cx              ; include separator
+ jmp PGD_PATH_SCAN
+
+PGD_COPY:
+ ; DX = directory length, 0..255
+ mov di,OFFSET S_PROGDIR
+ mov [di],dl
+
+ cmp dx,0
+ je PGD_DONE
+
+ inc di
+ mov si,bx
+ mov cx,dx
+
+PGD_COPY_LOOP:
+ mov al,[es:si]
+ mov [di],al
+ inc si
+ inc di
+ loop PGD_COPY_LOOP
+
+PGD_DONE:
+ pop es
+ pop ds
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+%endif
 
 %ifdef USE_MEM
 MEMINIT:
@@ -774,9 +936,8 @@ POWS:
  push bx
  push cx
  push dx
- cmp bx,0
+ or bx,bx
  jl POWS_NEG
- cmp bx,0
  jne POWS_NZ
  mov ax,1
  jmp POWS_DONE
@@ -935,6 +1096,103 @@ STRS_DONE:
  ret
 %endif
 
+%ifdef USE_HX
+; -------------------------------------------------
+; HEXS
+; In : AX = 16-bit value
+;      DI = destination counted string
+; Out: uppercase hexadecimal without leading zeros
+;      0 -> "0"; -1 -> "FFFF"
+; -------------------------------------------------
+HEXS:
+ push ax
+ push bx
+ push cx
+ push dx
+ push si
+ push di
+ mov bx,ax
+ mov BYTE [di],0
+ mov si,di
+ inc si
+ mov cx,4
+HEXS_LOOP:
+ mov ax,bx
+ push cx
+ mov dx,cx
+ dec dx
+ shl dx,1
+ shl dx,1
+ mov cl,dl
+ shr ax,cl
+ pop cx
+ and al,0Fh
+ cmp BYTE [di],0
+ jne HEXS_STORE
+ cmp al,0
+ jne HEXS_STORE
+ cmp cx,1
+ jne HEXS_NEXT
+HEXS_STORE:
+ cmp al,9
+ jbe HEXS_DIG
+ add al,55
+ jmp HEXS_PUT
+HEXS_DIG:
+ add al,48
+HEXS_PUT:
+ inc BYTE [di]
+ mov [si],al
+ inc si
+HEXS_NEXT:
+ loop HEXS_LOOP
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ ret
+%endif
+
+%ifdef USE_SR
+; -------------------------------------------------
+; STRINGS
+; In : AX = count
+;      BL = character code
+;      DI = destination counted string
+; Out: string with count repetitions of BL
+;      count < 0 -> 0, count > 255 -> 255
+; Used by:
+;      SPACE$(count)
+;      STRING$(count,charCode)
+; -------------------------------------------------
+STRINGS:
+ push ax
+ push bx
+ push cx
+ push di
+ cmp ax,0
+ jge STRINGS_NN
+ xor ax,ax
+STRINGS_NN:
+ cmp ax,255
+ jbe STRINGS_LEN
+ mov ax,255
+STRINGS_LEN:
+ mov [di],al
+ mov cl,al
+ xor ch,ch
+ inc di
+ mov al,bl
+ rep stosb
+ pop di
+ pop cx
+ pop bx
+ pop ax
+ ret
+%endif
+
 %ifdef USE_IK
 ; -------------------------------------------------
 ; INKEYS
@@ -970,6 +1228,11 @@ INKEY_HAVE:
 ; Enhanced keyboard read.
 mov ah,10h
 int 16h
+
+; Ctrl-C
+ cmp al,03h
+ je INKEY_BREAK
+
 
 ; AL = ASCII or prefix, AH = scan code or prefix
 ;
@@ -1010,6 +1273,15 @@ mov BYTE PTR [di],2
 mov BYTE PTR [di+1],0
 mov [di+2],al
 
+INKEY_BREAK:
+ pop di
+ pop dx
+ pop cx
+ pop bx
+ pop ax
+ mov al,130
+ jmp RT_EXIT_AL
+
 INKEY_DONE:
     pop di
     pop dx
@@ -1031,42 +1303,96 @@ INPUTS:
  push di
  xor cx,cx
  inc di
+
+ ; prompt "? " via BIOS teletype
  push ax
- push dx
- mov ah,02h
- mov dl,'?'
- int 21h
- mov dl,' '
- int 21h
- pop dx
+ push bx
+ mov ah,0Eh
+ mov bh,0
+ mov bl,7
+ mov al,'?'
+ int 10h
+ mov al,' '
+ int 10h
+ pop bx
  pop ax
+
 INPUTS_LOOP:
- mov ah,01h
- int 21h
+ ; BIOS blocking keyboard read
+ mov ah,00h
+ int 16h
+
+ ; Ctrl-C
+ cmp al,03h
+ je INPUT_BREAK
+
+ ; Ctrl-Break / zero word
+ cmp ax,0
+ je INPUT_BREAK
+
+ ; Ignore special / enhanced keys
+ cmp al,0
+ je INPUTS_LOOP
+ cmp al,224
+ je INPUTS_LOOP
+
+ ; Backspace
  cmp al,8
  jne INPUT_NOT_BS
  cmp cl,0
  je INPUTS_LOOP
  dec di
  dec cl
- mov ah,02h
- mov dl,' '
- int 21h
- mov dl,8
- int 21h
+
+ ; erase previous character: BS, space, BS
+ push ax
+ push bx
+ mov ah,0Eh
+ mov bh,0
+ mov bl,7
+ mov al,8
+ int 10h
+ mov al,' '
+ int 10h
+ mov al,8
+ int 10h
+ pop bx
+ pop ax
+
  jmp INPUTS_LOOP
+
 INPUT_NOT_BS:
+ ; Enter
  cmp al,13
  je INPUTS_DONE
+
+ ; store character
  mov [di],al
  inc di
  inc cl
+
+ ; echo character
+ push ax
+ push bx
+ mov ah,0Eh
+ mov bh,0
+ mov bl,7
+ int 10h
+ pop bx
+ pop ax
+
  cmp cl,255
  jne INPUTS_LOOP
+
 INPUTS_DONE:
  pop di
  mov [di],cl
  jmp WRITE_CRLFH
+
+INPUT_BREAK:
+ pop di
+ mov al,130
+ jmp RT_EXIT_AL
 
 READ_LINEH:
  push ax
@@ -1655,8 +1981,13 @@ LOCATEC_DONE:
 ; PSETC: AX = x, BX = y, DX = color
 ;   Uses BIOS INT 10h AH=0Ch, page 0.
 ;
-; CIRCLEC: AX = center x, BX = center y, CX = radius, DX = color
+;   CIRCLEC: AX = center x, BX = center y, CX = radius, DX = color
 ;   Draws an integer outline circle using PSETC.
+;
+;   CIRCLEAC: AX = center x, BX = center y, CX = radius, DX = color,
+;             SI = aspect_scaled, where 256 means 1.0.
+;   Draws an integer outline ellipse by scaling the y offsets:
+;       y' = y * aspect_scaled / 256
 ;
 ; =================================================
 GR_USED db 0
@@ -1710,25 +2041,54 @@ PSETC:
 ;   Draws an outline circle using integer midpoint algorithm.
 ;   Uses PSETC internally.
 ;   Negative radius draws nothing.
+;
+; CIRCLEAC
+; In:
+;   AX = center x
+;   BX = center y
+;   CX = radius
+;   DX = color
+;   SI = aspect_scaled, 256 = 1.0
+; Effect:
+;   Draws an outline ellipse by scaling vertical offsets:
+;      y' = y * aspect_scaled / 256
+;
+; Notes:
+;   CIRCLEC remains backward compatible. It sets SI=256 and then
+;   calls CIRCLEAC, so existing compiler output still draws circles.
 ; -------------------------------------------------
-
 GC_CX   dw 0
 GC_CY   dw 0
 GC_COL  dw 0
 GC_X    dw 0
 GC_Y    dw 0
 GC_D    dw 0
+GC_ASP  dw 0
+GC_XS   dw 0
+GC_YS   dw 0
 
 CIRCLEC:
+ push si
+ mov si,256
+ call CIRCLEAC
+ pop si
+ ret
+
+CIRCLEAC:
  push ax
  push bx
  push cx
  push dx
  push si
  push di
-
  cmp cx,0
  jl CIRCLEC_DONE
+
+ cmp si,0
+ jge CIRCLEC_ASP_OK
+ neg si
+CIRCLEC_ASP_OK:
+ mov [GC_ASP],si
 
  mov [GC_CX],ax
  mov [GC_CY],bx
@@ -1796,82 +2156,123 @@ CIRCLEC_DONE:
  ret
 
 ; -------------------------------------------------
+; CIRCLE_SCALEY
+; In : AX = non-negative circle offset
+; Out: AX = floor(AX * GC_ASP / 256)
+; Uses unsigned multiplication. GC_ASP is normalized
+; to non-negative in CIRCLEAC.
+; -------------------------------------------------
+CIRCLE_SCALEY:
+ push bx
+ push dx
+ mov bx,[GC_ASP]
+ cmp bx,256
+ jne CIRCLE_SCALEY_CALC
+ pop dx
+ pop bx
+ ret
+
+CIRCLE_SCALEY_CALC:
+ mul bx
+ mov al,ah
+ mov ah,dl
+ pop dx
+ pop bx
+ ret
+
+; -------------------------------------------------
 ; CIRCLE_PLOT8
 ; Plots the eight symmetric points for current GC_X/GC_Y.
 ; Uses PSETC.
+; For aspect ellipses, vertical offsets are scaled:
+;   GC_YS = GC_Y * GC_ASP / 256
+;   GC_XS = GC_X * GC_ASP / 256
 ; -------------------------------------------------
-
 CIRCLE_PLOT8:
  mov si,[GC_X]
  mov di,[GC_Y]
 
- ; cx+x, cy+y
+ ; Scale y offsets for aspect ellipse.
+ mov ax,di
+ call CIRCLE_SCALEY
+ mov [GC_YS],ax
+ mov ax,si
+ call CIRCLE_SCALEY
+ mov [GC_XS],ax
+
+ ; cx+x, cy+y'
  mov ax,[GC_CX]
  add ax,si
  mov bx,[GC_CY]
- add bx,di
+ mov cx,[GC_YS]
+ add bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx-x, cy+y
+ ; cx-x, cy+y'
  mov ax,[GC_CX]
  sub ax,si
  mov bx,[GC_CY]
- add bx,di
+ mov cx,[GC_YS]
+ add bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx+x, cy-y
+ ; cx+x, cy-y'
  mov ax,[GC_CX]
  add ax,si
  mov bx,[GC_CY]
- sub bx,di
+ mov cx,[GC_YS]
+ sub bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx-x, cy-y
+ ; cx-x, cy-y'
  mov ax,[GC_CX]
  sub ax,si
  mov bx,[GC_CY]
- sub bx,di
+ mov cx,[GC_YS]
+ sub bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx+y, cy+x
+ ; cx+y, cy+x'
  mov ax,[GC_CX]
  add ax,di
  mov bx,[GC_CY]
- add bx,si
+ mov cx,[GC_XS]
+ add bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx-y, cy+x
+ ; cx-y, cy+x'
  mov ax,[GC_CX]
  sub ax,di
  mov bx,[GC_CY]
- add bx,si
+ mov cx,[GC_XS]
+ add bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx+y, cy-x
+ ; cx+y, cy-x'
  mov ax,[GC_CX]
  add ax,di
  mov bx,[GC_CY]
- sub bx,si
+ mov cx,[GC_XS]
+ sub bx,cx
  mov dx,[GC_COL]
  call PSETC
 
- ; cx-y, cy-x
+ ; cx-y, cy-x'
  mov ax,[GC_CX]
  sub ax,di
  mov bx,[GC_CY]
- sub bx,si
+ mov cx,[GC_XS]
+ sub bx,cx
  mov dx,[GC_COL]
  call PSETC
-
  ret
- 
- 
+
 ; -------------------------------------------------
 ; GR_RESET
 ; Effect:
@@ -3765,14 +4166,35 @@ EXC_BUILD_PB:
  mov bx,OFFSET EX_PARAMBLK
  mov ax,cs
  mov es,ax
- mov ax,4B00h
+mov ax,4B00h
  int 21h
  jc EXC_ERR
- xor ax,ax
+
+ ; Child ran. Fetch child return code immediately.
+ mov ah,4Dh
+ int 21h              ; AH = termination type, AL = child return code
+
+ cmp ah,0
+ jne EXC_ABTERM
+
+ ; Normal child termination: return AL as AX = 0..255
+ xor ah,ah
+ jmp EXC_SAVE
+
+EXC_ABTERM:
+ ; Abnormal child termination:
+ ; AH = 1 Ctrl-C, 2 critical error, 3 TSR
+ ; Return as negative code: -(256 + AH)
+ mov al,ah
+ xor ah,ah
+ add ax,256
+ neg ax
  jmp EXC_SAVE
 
 EXC_ERR:
- ; AX contains DOS error code
+ ; EXEC load/execute failed.
+ ; DOS error code is in AX. Return it negative.
+ neg ax
 
 EXC_SAVE:
  push cs
@@ -4209,6 +4631,65 @@ READW_OOD:
 DAERR:
  db "OUT OF DATA"
 %endif
+
+; =================================================
+; BREAK / CTRL-C support
+;
+; BIOS-only break check:
+;   - no REQ BK needed
+;   - no USE_BK conditional
+;   - no INT 23h handler registration
+;   - no DOS AH=0Bh polling
+;
+; BRKCHK polls the BIOS keyboard buffer via
+; INT 16h AH=01h, but only every 32 calls to keep
+; large loops fast.
+;
+; Abort conditions checked through BIOS:
+;   Ctrl-C      : AL = 03h, commonly AX = 2E03h
+;   Ctrl-Break : BIOS may report AX = 0000 with ZF=0
+;
+; On abort, the pending key is consumed with
+; INT 16h AH=00h, then the program exits with
+; errorlevel 130.
+; =================================================
+
+BRKCNT db 31
+
+BRKCHK:
+ push ax
+
+ ; Poll BIOS only every 32 calls.
+ ; BRKCNT starts at 31, so the first BRKCHK checks immediately.
+ inc BYTE [BRKCNT]
+ mov al,[BRKCNT]
+ and al,31
+ jne BRKCHK_DONE
+
+ ; BIOS keyboard status, no key removal.
+ mov ah,01h
+ int 16h
+ jz BRKCHK_DONE
+
+ ; Ctrl-C: AL = 03h, commonly AX = 2E03h.
+ cmp al,03h
+ je BRKCHK_ABORT
+
+ ; Ctrl-Break: many BIOSes report a zero word but ZF=0.
+ cmp ax,0
+ je BRKCHK_ABORT
+
+BRKCHK_DONE:
+ pop ax
+ ret
+
+BRKCHK_ABORT:
+ ; Consume pending break key before terminating.
+ mov ah,00h
+ int 16h
+ pop ax
+ mov al,130
+ jmp RT_EXIT_AL
 
 %ifdef USE_MEM
 ; -------------------------------------------------
