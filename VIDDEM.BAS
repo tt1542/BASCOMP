@@ -3,7 +3,7 @@
 30 REM Uses DEF SEG, PEEK, POKE, COLOR, LOCATE, INKEY$
 40 REM =========================================
 
-50 DEF SEG = 47104
+50 DEF SEG = &HB800
 
 60 OLDCH = PEEK(0)
 70 OLDCO = PEEK(1)

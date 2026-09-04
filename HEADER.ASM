@@ -3,9 +3,10 @@ BITS 16
 %define OFFSET
 %define PTR
 start:
-mov ax,cs
-mov ds,ax
-mov es,ax
+push cs
+pop ds
+push cs
+pop es
 cld
 call INIT_COMMAND
 jmp s2
@@ -85,7 +86,7 @@ BASBAN3:
  times 197 db 0
 
 BASBAN4:
- db 58," |    |   \ / __ \_\___ \\ 2.2 \___(  <_> )  Y Y  \  |_> >"
+ db 58," |    |   \ / __ \_\___ \\ 3.0 \___(  <_> )  Y Y  \  |_> >"
  times 197 db 0
 
 BASBAN5:
@@ -106,7 +107,6 @@ MSG2:
  times 230 db 0
 MSG3:
  db 10,"COMPILING "
- times 245 db 0
 MSG4:
  db 4," -> "
  times 251 db 0

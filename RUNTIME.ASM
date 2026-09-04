@@ -1,3 +1,6 @@
+; Uncomment to use a 256-byte private stack instead of 128 bytes.
+; %define STACK256
+
 %ifdef USE_LN
  %define USE_GR
 %endif
@@ -9,11 +12,21 @@ RT_EXIT:
   xor al,al
 
 RT_EXIT_AL:
+%ifdef USE_BI
+  push ax
+  call BIFLUSH
+  pop ax
+%endif
 %ifdef USE_GR
   push ax
   call GR_RESET
   pop ax
 %endif
+%ifdef STACKMON
+  mov [SM_EXIT],al
+  jmp STACK_REPORT
+%endif
+RT_EXIT_DOS:
   mov ah,4Ch
   int 21h
 
@@ -29,6 +42,7 @@ SV:
  %define USE_PR
  %define USE_NB
  %define USE_TMP
+ %define USE_RTE
 %endif
 
 %ifdef USE_FI
@@ -45,6 +59,8 @@ SV:
  %define USE_NB
  FLSALL db "*.*",0
  FLDTA: times 43 db 0
+ FLDTA_OLD_OFF dw 0
+ FLDTA_OLD_SEG dw 0
 %endif
 
 %ifdef USE_PN
@@ -53,6 +69,15 @@ SV:
 
 %ifdef USE_HX
  %define USE_ST
+ %define USE_IB
+%endif
+%ifdef USE_OC
+ %define USE_ST
+ %define USE_IB
+%endif
+%ifdef USE_BN
+ %define USE_ST
+ %define USE_IB
 %endif
 %ifdef USE_SR
  %define USE_ST
@@ -94,6 +119,9 @@ SV:
  %define USE_RTE
 %endif
 %ifdef USE_MT
+ %define USE_RTE
+%endif
+%ifdef USE_DV
  %define USE_RTE
 %endif
 %ifdef USE_FI
@@ -149,8 +177,12 @@ SV:
  %define USE_MEM
 %endif
 
+%ifdef STACKMON
+ %define USE_MEM
+%endif
+
 %ifdef USE_NB
- NB: times 256 db 0
+ NB: times 257 db 0
 %endif
 
 %ifdef USE_TMP
@@ -217,7 +249,8 @@ RT_ABORT:
 INIT_COMMAND:
 %ifdef USE_MEM
  ; -------------------------------------------------
- ; Private COM stack only for XA/string arrays.
+ ; Private COM stack for DOS-memory features.
+ ; Default: 128 bytes. Define STACK256 for 256 bytes.
  ; INIT_COMMAND is called directly from start via CALL.
  ; Therefore the return address is on the old stack.
  ; Procedure:
@@ -227,11 +260,28 @@ INIT_COMMAND:
  ;   4. continue normally and RET at the end
  ; -------------------------------------------------
  pop bx                  ; save return address
-
+%ifdef STACKMON
+ push es
+ push cs
+ pop es
+ mov di,OFFSET ENDPROG
+%ifdef STACK256
+ mov cx,128            ; 128 words = 256 bytes
+%else
+ mov cx,64             ; 64 words = 128 bytes
+%endif
+ mov ax,0A55Ah
+ rep stosw
+ pop es
+%endif
  cli
  mov ax,cs
  mov ss,ax
- mov sp,OFFSET RT_STACK_TOP
+%ifdef STACK256
+ mov sp,OFFSET ENDPROG+256
+%else
+ mov sp,OFFSET ENDPROG+128
+%endif
  sti
 
  push bx                 ; return address on new stack
@@ -249,7 +299,7 @@ INIT_COMMAND:
  int 1Ah
  mov ax,dx
  xor ax,cx
- cmp ax,0
+ or ax,ax
  jne RNDINIT_OK
  mov ax,1
 RNDINIT_OK:
@@ -276,7 +326,7 @@ RNDINIT_OK:
  mov cl,[80h]          ; Length of the DOS command tail
  mov di,OFFSET S_COMMAND
 
- cmp cl,0
+ or cl,cl
  jne ICMD_HAVE
  mov BYTE [di],0
  jmp ICMD_DONE
@@ -344,7 +394,7 @@ PROGDIR_INIT:
 
  ; PSP:2Ch = environment segment
  mov ax,[2Ch]
- cmp ax,0
+ or ax,ax
  je PGD_DONE
 
  mov es,ax
@@ -385,11 +435,8 @@ PGD_AFTER_STR:
  jmp PGD_ENV_SCAN
 
 PGD_ENV_END:
- ; skip double zero
- add bx,2
-
- ; skip word before program name
- add bx,2
+ ; skip double zero and following word before program name
+ add bx,4
 
  ; ES:BX now points to ASCIIZ program path if available.
  ; Scan path and remember length up to last separator.
@@ -426,7 +473,7 @@ PGD_COPY:
  mov di,OFFSET S_PROGDIR
  mov [di],dl
 
- cmp dx,0
+ or dx,dx
  je PGD_DONE
 
  inc di
@@ -453,11 +500,17 @@ PGD_DONE:
 %endif
 
 %ifdef USE_MEM
+; -------------------------------------------------
+; MEMINIT
+; Out: CF clear = memory block successfully resized or already done
+;      CF set   = resize failed, AX = DOS error code
+; Preserves all other registers and preserves AX on success.
+; -------------------------------------------------
 MEMINIT:
  cmp BYTE [MEMINITD],0
- jne MEMINIT_DONE
- mov BYTE [MEMINITD],1
+ jne MEMINIT_OK
 
+ push bp
  push ax
  push bx
  push ds
@@ -469,19 +522,68 @@ MEMINIT:
  pop es
 
  mov bx,((ENDPROG - start + 100h + 15) >> 4)
+%ifdef STACK256
+ add bx,16             ; reserve 256 stack bytes
+%else
+ add bx,8              ; reserve 128 stack bytes
+%endif
  mov ah,4Ah
  int 21h
+ jc MEMINIT_FAIL
+ mov BYTE [MEMINITD],1
 
  pop es
  pop ds
  pop bx
  pop ax
-
-MEMINIT_DONE:
+ pop bp
+MEMINIT_OK:
+ CLC
+ ret
+MEMINIT_FAIL:
+ mov bp,ax
+ pop es
+ pop ds
+ pop bx
+ pop ax
+ mov ax,bp
+ pop bp
+ STC
  ret
 %endif
 
 %ifdef USE_ST
+; -------------------------------------------------
+; LEFT2 / RIGHT2 / MID2
+; Compact expression wrappers around LEFT/RIGHT/MID.
+;
+; LEFT2 / RIGHT2:
+;   In : SI = source counted string, CX = count
+; MID2:
+;   In : SI = source counted string, DX = start, CX = count
+; All:
+;   Out: result in TMP2$, SI = OFFSET TMP2$
+;        DI preserved
+; -------------------------------------------------
+LEFT2:
+ push di
+ mov di,OFFSET TMP2$
+ call LEFT
+ jmp STRFUN2_DONE
+RIGHT2:
+ push di
+ mov di,OFFSET TMP2$
+ call RIGHT
+ jmp STRFUN2_DONE
+MID2:
+ push di
+ mov di,OFFSET TMP2$
+ call MID
+STRFUN2_DONE:
+ mov si,OFFSET TMP2$
+ pop di
+ ret
+
 LEFT:
   mov bl,[si]
   mov ch,0
@@ -536,19 +638,16 @@ LTRIM:
  xor cx,cx
  mov cl,[si]
  inc si
- cmp cl,0
- jne LTRIM_SCAN
- mov BYTE PTR [di],0
- ret
+ or cl,cl
+ je LTRIM_ZERO
 
 LTRIM_SCAN:
- cmp cl,0
- je LTRIM_ZERO
  cmp BYTE PTR [si],' '
  jne LTRIM_COPY
  inc si
  dec cl
- jmp LTRIM_SCAN
+ jne LTRIM_SCAN
+ jmp LTRIM_ZERO
 
 LTRIM_COPY:
  mov [di],cl
@@ -565,7 +664,7 @@ RTRIM:
  mov cl,[si]
  mov bx,si
  inc bx
- cmp cl,0
+ or cl,cl
  jne RTRIM_PREP
  mov BYTE PTR [di],0
  ret
@@ -576,7 +675,7 @@ RTRIM_PREP:
  dec si
 
 RTRIM_SCAN:
- cmp cl,0
+ or cl,cl
  je RTRIM_ZERO
  cmp BYTE PTR [si],' '
  jne RTRIM_COPY
@@ -608,7 +707,7 @@ UCASE:
  mov [di],cl
  inc si
  inc di
- cmp cl,0
+ or cl,cl
  je UCASE_DONE
 UCASE_LOOP:
  lodsb
@@ -682,9 +781,9 @@ STRCMP:
   inc si
   inc di
 CMP_LOOP:
-  cmp cl,0
+  or cl,cl
   je CMP_ENDA
-  cmp dl,0
+  or dl,dl
   je CMP_ENDB
   mov al,[si]
   mov ah,[di]
@@ -700,7 +799,7 @@ CMP_DIFF:
   pop cx
   ret
 CMP_ENDA:
-  cmp dl,0
+  or dl,dl
   je CMP_EQ
   mov al,-1
   pop cx
@@ -723,18 +822,19 @@ INSTRS:
  mov bl,[si]
  mov bh,[di]
  inc di
- cmp bh,0
- jne ICHK
- mov al,dl
- jmp INSTRS_END
-ICHK:
- cmp dl,1
+ cmp dx,1
  jae IOK
- mov dl,1
+ mov dx,1
 IOK:
- cmp dl,bl
+ xor ax,ax
+ mov al,bl
+ cmp dx,ax
  ja INF
- xor dh,dh
+ or bh,bh
+ jne ICHK
+ mov ax,dx
+ jmp ICLEAN
+ICHK:
  add si,dx
  xor cx,cx
  mov cl,bl
@@ -760,20 +860,19 @@ ILOOP:
  inc si
  loop ILOOP
 INF:
- xor al,al
+ xor ax,ax
  jmp ICLEAN
 IFND:
  pop di
  pop si
  pop cx
+ xor ax,ax
  mov al,bl
  sub al,cl
  inc al
  sub al,bh
  inc al
 ICLEAN:
-INSTRS_END:
- xor ah,ah
  pop di
  pop si
  pop dx
@@ -795,7 +894,7 @@ RNDS:
  push bx
  push dx
 
- cmp bx,0
+ or bx,bx
  jg RNDS_OK
  xor ax,ax
  jmp RNDS_DONE          
@@ -823,19 +922,16 @@ TRIM:
  xor cx,cx
  mov cl,[si]
  inc si
- cmp cl,0
- jne TRIM_LEAD
- mov BYTE PTR [di],0
- ret
+ or cl,cl
+ je TRIM_ZERO
 
 TRIM_LEAD:
- cmp cl,0
- je TRIM_ZERO
  cmp BYTE PTR [si],' '
  jne TRIM_HAVE
  inc si
  dec cl
- jmp TRIM_LEAD
+ jne TRIM_LEAD
+ jmp TRIM_ZERO
 
 TRIM_HAVE:
  mov bx,si
@@ -843,7 +939,7 @@ TRIM_HAVE:
  dec si
 
 TRIM_TRAIL:
- cmp cl,0
+ or cl,cl
  je TRIM_ZERO
  cmp BYTE PTR [si],' '
  jne TRIM_COPY
@@ -872,9 +968,8 @@ TRIM_ZERO:
 ; -------------------------------------------------
 SQRS:
  push bx
- push cx
  push dx
- cmp ax,0
+ or ax,ax
  jge SQRS_OK
  xor ax,ax
  jmp SQRS_DONE
@@ -891,7 +986,6 @@ SQRS_LOOP:
  jmp SQRS_LOOP
 SQRS_DONE:
  pop dx
- pop cx
  pop bx
  ret
 
@@ -964,6 +1058,50 @@ POWS_DONE:
  ret
 %endif
 
+%ifdef USE_DV
+; -------------------------------------------------
+; IABSS - checked 16-bit ABS
+; In : AX = signed 16-bit value
+; Out: AX = absolute value
+; Abort: -32768 cannot be represented as positive INTEGER
+; -------------------------------------------------
+IAROVERR:
+ db "INTEGER OVERFLOW"
+IARDIVZR:
+ db "DIVISION BY ZERO"
+IABSS:
+ cmp ax,8000h
+ je IAR_OVERFLOW
+ or ax,ax
+ jns IABSS_DONE
+ neg ax
+IABSS_DONE:
+ ret
+; -------------------------------------------------
+; IDIVS - checked signed 16-bit division
+; In : AX = dividend, BX = divisor
+; Out: AX = quotient, DX = remainder
+; -------------------------------------------------
+IDIVS:
+ or bx,bx
+ je IAR_DIVZERO
+ cmp ax,8000h
+ jne IDIVS_DO
+ cmp bx,-1
+ je IAR_OVERFLOW
+IDIVS_DO:
+ cwd
+ idiv bx
+ ret
+IAR_DIVZERO:
+ mov dx,OFFSET IARDIVZR
+ mov cx,16
+ jmp RT_ABORT
+IAR_OVERFLOW:
+ mov dx,OFFSET IAROVERR
+ mov cx,16
+ jmp RT_ABORT
+%endif
 %ifdef USE_CV
 VAL:
  xor ax,ax
@@ -973,7 +1111,7 @@ VAL:
  inc si
 
 VAL_LEAD:
- cmp cl,0
+ or cl,cl
  je VAL_DONE
  mov dl,[si]
  cmp dl,' '
@@ -983,21 +1121,64 @@ VAL_LEAD:
  cmp dl,'+'
  je VAL_SIGN
  cmp dl,'-'
- jne VAL_LOOP
+ jne VAL_CHECK_PREFIX
  mov ch,1
 
 VAL_SIGN:
  inc si
  dec cl
- jmp VAL_LOOP
+
+VAL_CHECK_PREFIX:
+ or cl,cl
+ je VAL_APPLY_SIGN
+ mov dl,[si]
+ cmp dl,'&'
+ je VAL_PREFIX
+ jmp VAL_DEC_LOOP
 
 VAL_LEAD_SKIP:
  inc si
  dec cl
  jmp VAL_LEAD
 
-VAL_LOOP:
- cmp cl,0
+VAL_PREFIX:
+ inc si
+ dec cl
+ or cl,cl
+ je VAL_APPLY_SIGN
+ mov dl,[si]
+ cmp dl,'H'
+ je VAL_SET_HEX
+ cmp dl,104      ; 'h'
+ je VAL_SET_HEX
+ cmp dl,'O'
+ je VAL_SET_OCT
+ cmp dl,111      ; 'o'
+ je VAL_SET_OCT
+ cmp dl,'B'
+ je VAL_SET_BIN
+ cmp dl,98       ; 'b'
+ je VAL_SET_BIN
+ jmp VAL_APPLY_SIGN
+
+VAL_SET_HEX:
+ mov bx,16
+ jmp VAL_PREFIX_DONE
+
+VAL_SET_OCT:
+ mov bx,8
+ jmp VAL_PREFIX_DONE
+
+VAL_SET_BIN:
+ mov bx,2
+
+VAL_PREFIX_DONE:
+ inc si
+ dec cl
+ jmp VAL_BASE_LOOP
+
+VAL_DEC_LOOP:
+ or cl,cl
  je VAL_APPLY_SIGN
  mov dl,[si]
  cmp dl,' '
@@ -1019,12 +1200,59 @@ VAL_LOOP:
 VAL_SKIP:
  inc si
  dec cl
- jmp VAL_LOOP
+ jmp VAL_DEC_LOOP
+
+VAL_BASE_LOOP:
+ or cl,cl
+ je VAL_APPLY_SIGN
+ mov dl,[si]
+ cmp dl,' '
+ je VAL_BASE_SKIP
+ cmp dl,9
+ je VAL_BASE_SKIP
+ cmp dl,'0'
+ jb VAL_APPLY_SIGN
+ cmp dl,'9'
+ jbe VAL_DIG_NUM
+ cmp dl,'A'
+ jb VAL_DIG_LOWER
+ cmp dl,'F'
+ jbe VAL_DIG_UPPER
+
+VAL_DIG_LOWER:
+ cmp dl,97       ; 'a'
+ jb VAL_APPLY_SIGN
+ cmp dl,102      ; 'f'
+ ja VAL_APPLY_SIGN
+ sub dl,87
+ jmp VAL_DIG_OK
+
+VAL_DIG_UPPER:
+ sub dl,55
+ jmp VAL_DIG_OK
+
+VAL_DIG_NUM:
+ sub dl,'0'
+
+VAL_DIG_OK:
+ cmp dl,bl
+ jae VAL_APPLY_SIGN
+ xor dh,dh
+ push dx
+ mul bx
+ pop dx
+ add ax,dx
+
+VAL_BASE_SKIP:
+ inc si
+ dec cl
+ jmp VAL_BASE_LOOP
 
 VAL_APPLY_SIGN:
- cmp ch,0
+ or ch,ch
  je VAL_DONE
  neg ax
+
 VAL_DONE:
  ret
 
@@ -1047,14 +1275,13 @@ STRS:
  mov si,di
  mov BYTE PTR [si],0
 
- cmp ax,0
+ or ax,ax
  jne STRS_NZ
  mov BYTE PTR [si],1
  mov BYTE PTR [si+1],'0'
  jmp STRS_DONE
 
 STRS_NZ:
- cmp ax,0
  jns STRS_ABS
  mov BYTE PTR [si],1
  mov BYTE PTR [si+1],'-'
@@ -1070,7 +1297,7 @@ STRS_DIV:
  add dl,'0'
  push dx
  inc cx
- cmp ax,0
+ or ax,ax
  jne STRS_DIV
 
  mov di,si
@@ -1099,58 +1326,98 @@ STRS_DONE:
 %ifdef USE_HX
 ; -------------------------------------------------
 ; HEXS
-; In : AX = 16-bit value
-;      DI = destination counted string
+; In : AX = 16-bit value, DI = destination counted string
 ; Out: uppercase hexadecimal without leading zeros
 ;      0 -> "0"; -1 -> "FFFF"
 ; -------------------------------------------------
 HEXS:
- push ax
  push bx
+ mov bx,16
+ call IBASES
+ pop bx
+ ret
+%endif
+
+%ifdef USE_OC
+; -------------------------------------------------
+; OCTS
+; In : AX = 16-bit value, DI = destination counted string
+; Out: octal without leading zeros
+;      0 -> "0"; -1 -> "177777"
+; -------------------------------------------------
+OCTS:
+ push bx
+ mov bx,8
+ call IBASES
+ pop bx
+ ret
+%endif
+
+%ifdef USE_BN
+; -------------------------------------------------
+; BINS
+; In : AX = 16-bit value, DI = destination counted string
+; Out: binary without leading zeros
+;      0 -> "0"; -1 -> "1111111111111111"
+; -------------------------------------------------
+BINS:
+ push bx
+ mov bx,2
+ call IBASES
+ pop bx
+ ret
+%endif
+
+%ifdef USE_IB
+; -------------------------------------------------
+; IBASES - shared unsigned 16-bit base conversion
+; In : AX = 16-bit value, BX = radix 2/8/16,
+;      DI = destination counted string
+; Out: counted string without leading zeros, SI not significant
+;      digits above 9 are uppercase A..F
+; -------------------------------------------------
+IBASES:
+ push ax
  push cx
  push dx
  push si
  push di
- mov bx,ax
- mov BYTE [di],0
  mov si,di
+ mov BYTE [si],0
+ or ax,ax
+ jne IBASES_NZ
+ mov BYTE [si],1
+ mov BYTE [si+1],'0'
+ jmp IBASES_DONE
+IBASES_NZ:
+ xor cx,cx
+IBASES_DIV:
+ xor dx,dx
+ div bx
+ push dx
+ inc cx
+ or ax,ax
+ jne IBASES_DIV
+ mov [si],cl
  inc si
- mov cx,4
-HEXS_LOOP:
- mov ax,bx
- push cx
- mov dx,cx
- dec dx
- shl dx,1
- shl dx,1
- mov cl,dl
- shr ax,cl
- pop cx
- and al,0Fh
- cmp BYTE [di],0
- jne HEXS_STORE
- cmp al,0
- jne HEXS_STORE
- cmp cx,1
- jne HEXS_NEXT
-HEXS_STORE:
+IBASES_OUT:
+ pop dx
+ mov al,dl
  cmp al,9
- jbe HEXS_DIG
+ jbe IBASES_DIG
  add al,55
- jmp HEXS_PUT
-HEXS_DIG:
+ jmp IBASES_PUT
+IBASES_DIG:
  add al,48
-HEXS_PUT:
- inc BYTE [di]
+IBASES_PUT:
  mov [si],al
  inc si
-HEXS_NEXT:
- loop HEXS_LOOP
+ loop IBASES_OUT
+IBASES_DONE:
  pop di
  pop si
  pop dx
  pop cx
- pop bx
  pop ax
  ret
 %endif
@@ -1172,7 +1439,7 @@ STRINGS:
  push bx
  push cx
  push di
- cmp ax,0
+ or ax,ax
  jge STRINGS_NN
  xor ax,ax
 STRINGS_NN:
@@ -1236,7 +1503,7 @@ int 16h
 
 ; AL = ASCII or prefix, AH = scan code or prefix
 ;
-; Normale BIOS-special key:
+; Normal BIOS special key:
 ;   AL = 0, AH = scan code
 ;
 ; Enhanced keyboard variant:
@@ -1272,6 +1539,7 @@ INKEY_EXT_AL:
 mov BYTE PTR [di],2
 mov BYTE PTR [di+1],0
 mov [di+2],al
+jmp INKEY_DONE
 
 INKEY_BREAK:
  pop di
@@ -1327,7 +1595,7 @@ INPUTS_LOOP:
  je INPUT_BREAK
 
  ; Ctrl-Break / zero word
- cmp ax,0
+ or ax,ax
  je INPUT_BREAK
 
  ; Ignore special / enhanced keys
@@ -1339,7 +1607,8 @@ INPUTS_LOOP:
  ; Backspace
  cmp al,8
  jne INPUT_NOT_BS
- cmp cl,0
+INPUT_BACKSPACE:
+ or cl,cl
  je INPUTS_LOOP
  dec di
  dec cl
@@ -1384,15 +1653,42 @@ INPUT_NOT_BS:
  cmp cl,255
  jne INPUTS_LOOP
 
+ ; Buffer full: consume input until Enter. Backspace reopens one slot.
+INPUTS_FULL:
+ mov ah,00h
+ int 16h
+ cmp al,03h
+ je INPUT_BREAK
+ or ax,ax
+ je INPUT_BREAK
+ cmp al,0
+ je INPUTS_FULL
+ cmp al,224
+ je INPUTS_FULL
+ cmp al,13
+ je INPUTS_DONE
+ cmp al,8
+ je INPUT_BACKSPACE
+ jmp INPUTS_FULL
+
 INPUTS_DONE:
  pop di
  mov [di],cl
+ mov bx,1
  jmp WRITE_CRLFH
 
 INPUT_BREAK:
  pop di
  mov al,130
  jmp RT_EXIT_AL
+
+RLHERR:
+ db "FILE READ ERROR"
+
+READ_LINEH_ERROR:
+ mov dx,OFFSET RLHERR
+ mov cx,15
+ jmp RT_ABORT
 
 READ_LINEH:
  push ax
@@ -1410,7 +1706,8 @@ RLH_LOOP:
  mov dx,OFFSET NB
  int 21h
  pop cx
- cmp ax,0
+ jc READ_LINEH_ERROR
+ or ax,ax
  je RLH_DONE
  mov al,[NB]
  cmp al,13
@@ -1422,14 +1719,44 @@ RLH_LOOP:
  inc cl
  cmp cl,255
  jne RLH_LOOP
- jmp RLH_DONE
-RLH_CR:
+ ; Preserve the 255-byte result, but consume the rest of this physical line.
+RLH_DRAIN:
  push cx
  mov ah,3Fh
  mov cx,1
  mov dx,OFFSET NB
  int 21h
  pop cx
+ jc READ_LINEH_ERROR
+ or ax,ax
+ je RLH_DONE
+ mov al,[NB]
+ cmp al,10
+ je RLH_DONE
+ cmp al,13
+ jne RLH_DRAIN
+RLH_CR:
+ ; Consume an optional LF. If the next byte is not LF, seek back one byte.
+ push cx
+ mov ah,3Fh
+ mov cx,1
+ mov dx,OFFSET NB
+ int 21h
+ pop cx
+ jc READ_LINEH_ERROR
+ or ax,ax
+ je RLH_DONE
+ cmp BYTE [NB],10
+ je RLH_DONE
+ push cx
+ push dx
+ mov ax,4201h
+ mov cx,-1
+ mov dx,-1
+ int 21h
+ pop dx
+ pop cx
+ jc READ_LINEH_ERROR
 RLH_DONE:
  mov [si],cl
  pop si
@@ -1464,7 +1791,7 @@ CHKC:
 GETHC:
  call CHKC
  mov dl,[FM+bx]
- cmp dl,0
+ or dl,dl
  je FI_NOTOPEN
  cmp dl,ah
  jne FI_MODE
@@ -1480,11 +1807,7 @@ GETHC:
 GETHIN:
  push ax
  mov ah,1
- call GETHC
- mov dx,bx
- pop ax
- mov bx,dx
- ret
+ jmp GETH_IO
 
 ; -------------------------------------------------
 ; In : AL = channel
@@ -1494,6 +1817,7 @@ GETHIN:
 GETHOUT:
  push ax
  mov ah,2
+GETH_IO:
  call GETHC
  mov dx,bx
  pop ax
@@ -1536,28 +1860,26 @@ CLOSEC_DONE:
 ; Common file/channel error abort
 ; In : DX = message, CX = length
 ; -------------------------------------------------
-FI_ABORT:
- jmp RT_ABORT
 
 FI_BADCH:
  mov dx,OFFSET FICHERR
  mov cx,11
- jmp FI_ABORT
+ jmp RT_ABORT
 
 FI_NOTOPEN:
  mov dx,OFFSET FINOPERR
  mov cx,16
- jmp FI_ABORT
+ jmp RT_ABORT
 
 FI_MODE:
  mov dx,OFFSET FIMODERR
  mov cx,18
- jmp FI_ABORT
+ jmp RT_ABORT
 
 FI_INUSE:
  mov dx,OFFSET FIUSEERR
  mov cx,14
- jmp FI_ABORT
+ jmp RT_ABORT
 
 FICHERR:
  db "BAD CHANNEL"
@@ -1579,7 +1901,7 @@ OPENI:
  jnc OPENI_OK
  mov dx,OFFSET OPNERR
  mov cx,13
- jmp FI_ABORT
+ jmp RT_ABORT
 OPENI_OK:
  pop bx
  mov BYTE [FM+bx],1
@@ -1595,12 +1917,12 @@ OPENO:
  jne FI_INUSE
  push bx
  mov ah,3Ch
- mov cx,0
+ xor cx,cx
  int 21h
  jnc OPENO_OK
  mov dx,OFFSET OPOERR
  mov cx,17
- jmp FI_ABORT
+ jmp RT_ABORT
 OPENO_OK:
  pop bx
  mov BYTE [FM+bx],2
@@ -1616,7 +1938,7 @@ KILLF:
  jnc KILLF_OK
  mov dx,OFFSET KILERR
  mov cx,17
- jmp FI_ABORT
+ jmp RT_ABORT
 KILLF_OK:
  ret
 
@@ -1659,6 +1981,7 @@ EOFH:
  xor cx,cx
  xor dx,dx
  int 21h
+ jc EOFH_ERROR
  mov si,ax
  mov di,dx
  mov ah,42h
@@ -1666,6 +1989,7 @@ EOFH:
  xor cx,cx
  xor dx,dx
  int 21h
+ jc EOFH_ERROR
  cmp dx,di
  jne EOFH_NO
  cmp ax,si
@@ -1681,13 +2005,28 @@ EOFH_RESTORE:
  mov cx,di
  mov dx,si
  int 21h
+ jc EOFH_RESTORE_ERROR
  pop ax
+EOFH_DONE:
  pop di
  pop si
  pop dx
  pop cx
  pop bx
  ret
+EOFH_RESTORE_ERROR:
+ pop ax
+EOFH_ERROR:
+ pop di
+ pop si
+ pop dx
+ pop cx
+ pop bx
+ mov dx,OFFSET EOFERR
+ mov cx,15
+ jmp RT_ABORT
+EOFERR:
+ db "FILE SEEK ERROR"
 %endif
 
 %ifdef USE_DR
@@ -1704,11 +2043,7 @@ DIRF:
  pop ax
  mov dx,OFFSET DIRERR
  mov cx,15
-%ifdef USE_FI
- jmp FI_ABORT
-%else
  jmp RT_ABORT
-%endif
 
 DIRF_OK:
  pop ax
@@ -1801,6 +2136,16 @@ CURDIR_DONE:
 ;   CX = 10h -> include directory entries in addition to normal files
 ; -------------------------------------------------
 FILESF:
+ ; Save caller DTA.
+ push es
+ mov ah,2Fh
+ int 21h
+ mov [FLDTA_OLD_OFF],bx
+ mov ax,es
+ mov [FLDTA_OLD_SEG],ax
+ pop es
+
+ ; Install private DTA for this search.
  push dx
  mov dx,OFFSET FLDTA
  mov ah,1Ah
@@ -1819,6 +2164,14 @@ FILES_LOOP:
  jnc FILES_LOOP
 
 FILES_DONE:
+ ; Restore caller DTA on every exit path.
+ mov dx,[FLDTA_OLD_OFF]
+ mov ax,[FLDTA_OLD_SEG]
+ push ds
+ mov ds,ax
+ mov ah,1Ah
+ int 21h
+ pop ds
  ret
 
 FILES_PRINT:
@@ -1993,11 +2346,13 @@ LOCATEC_DONE:
 GR_USED db 0
 
 SCREENC:
- cmp ax,0
+ or ax,ax
  jne SCR_N0
+ mov BYTE [GR_USED],0
  mov al,3
  jmp SCR_SET
 SCR_N0:
+ mov BYTE [GR_USED],1
  cmp ax,1
  jne SCR_N1
  mov al,4
@@ -2009,7 +2364,6 @@ SCR_N1:
 SCR_SET:
  mov ah,00h
  int 10h
- mov BYTE [GR_USED],1
  ret
 
 PSETC:
@@ -2018,9 +2372,8 @@ PSETC:
  push cx
  push dx
  mov cx,ax
- push dx
+ xchg ax,dx
  mov dx,bx
- pop ax
  xor bx,bx
  mov ah,0Ch
  int 10h
@@ -2081,10 +2434,10 @@ CIRCLEAC:
  push dx
  push si
  push di
- cmp cx,0
+ or cx,cx
  jl CIRCLEC_DONE
 
- cmp si,0
+ or si,si
  jge CIRCLEC_ASP_OK
  neg si
 CIRCLEC_ASP_OK:
@@ -2111,7 +2464,7 @@ CIRCLE_LOOP:
  call CIRCLE_PLOT8
 
  mov ax,[GC_D]
- cmp ax,0
+ or ax,ax
  jge CIRCLE_DECY
 
  ; d = d + 4*x + 6
@@ -2119,9 +2472,7 @@ CIRCLE_LOOP:
  shl ax,1
  shl ax,1
  add ax,6
- mov bx,[GC_D]
- add bx,ax
- mov [GC_D],bx
+ add [GC_D],ax
  jmp CIRCLE_INCX
 
 CIRCLE_DECY:
@@ -2132,18 +2483,12 @@ CIRCLE_DECY:
  shl ax,1
  shl ax,1
  add ax,10
- mov bx,[GC_D]
- add bx,ax
- mov [GC_D],bx
+ add [GC_D],ax
 
- mov ax,[GC_Y]
- dec ax
- mov [GC_Y],ax
+ dec WORD [GC_Y]
 
 CIRCLE_INCX:
- mov ax,[GC_X]
- inc ax
- mov [GC_X],ax
+ inc WORD [GC_X]
  jmp CIRCLE_LOOP
 
 CIRCLEC_DONE:
@@ -2199,77 +2544,62 @@ CIRCLE_PLOT8:
  mov ax,si
  call CIRCLE_SCALEY
  mov [GC_XS],ax
+ mov dx,[GC_COL]
 
  ; cx+x, cy+y'
  mov ax,[GC_CX]
  add ax,si
  mov bx,[GC_CY]
- mov cx,[GC_YS]
- add bx,cx
- mov dx,[GC_COL]
+ add bx,[GC_YS]
  call PSETC
 
  ; cx-x, cy+y'
  mov ax,[GC_CX]
  sub ax,si
  mov bx,[GC_CY]
- mov cx,[GC_YS]
- add bx,cx
- mov dx,[GC_COL]
+ add bx,[GC_YS]
  call PSETC
 
  ; cx+x, cy-y'
  mov ax,[GC_CX]
  add ax,si
  mov bx,[GC_CY]
- mov cx,[GC_YS]
- sub bx,cx
- mov dx,[GC_COL]
+ sub bx,[GC_YS]
  call PSETC
 
  ; cx-x, cy-y'
  mov ax,[GC_CX]
  sub ax,si
  mov bx,[GC_CY]
- mov cx,[GC_YS]
- sub bx,cx
- mov dx,[GC_COL]
+ sub bx,[GC_YS]
  call PSETC
 
  ; cx+y, cy+x'
  mov ax,[GC_CX]
  add ax,di
  mov bx,[GC_CY]
- mov cx,[GC_XS]
- add bx,cx
- mov dx,[GC_COL]
+ add bx,[GC_XS]
  call PSETC
 
  ; cx-y, cy+x'
  mov ax,[GC_CX]
  sub ax,di
  mov bx,[GC_CY]
- mov cx,[GC_XS]
- add bx,cx
- mov dx,[GC_COL]
+ add bx,[GC_XS]
  call PSETC
 
  ; cx+y, cy-x'
  mov ax,[GC_CX]
  add ax,di
  mov bx,[GC_CY]
- mov cx,[GC_XS]
- sub bx,cx
- mov dx,[GC_COL]
+ sub bx,[GC_XS]
  call PSETC
 
  ; cx-y, cy-x'
  mov ax,[GC_CX]
  sub ax,di
  mov bx,[GC_CY]
- mov cx,[GC_XS]
- sub bx,cx
- mov dx,[GC_COL]
+ sub bx,[GC_XS]
  call PSETC
  ret
 
@@ -2438,9 +2768,7 @@ LINEC_FL_LOOP:
 
  call LINE_D_STORED
 
- mov ax,[GL_YC]
- inc ax
- mov [GL_YC],ax
+ inc WORD [GL_YC]
  jmp LINEC_FL_LOOP
 
 LINEC_DONE:
@@ -2463,10 +2791,9 @@ LINEC_DONE:
 LINE_D_STORED:
  ; dx = abs(x2-x1), sx = sign(x2-x1)
  mov ax,[GL_X2]
- mov cx,[GL_X1]
- sub ax,cx
+ sub ax,[GL_X1]
  mov WORD [GL_SX],1
- cmp ax,0
+ or ax,ax
  jge LDS_DX_OK
  neg ax
  mov WORD [GL_SX],-1
@@ -2475,10 +2802,9 @@ LDS_DX_OK:
 
  ; dy = -abs(y2-y1), sy = sign(y2-y1)
  mov ax,[GL_Y2]
- mov cx,[GL_Y1]
- sub ax,cx
+ sub ax,[GL_Y1]
  mov WORD [GL_SY],1
- cmp ax,0
+ or ax,ax
  jge LDS_DY_POS
  neg ax
  mov WORD [GL_SY],-1
@@ -2488,8 +2814,7 @@ LDS_DY_POS:
 
  ; err = dx + dy
  mov ax,[GL_DX]
- mov cx,[GL_DY]
- add ax,cx
+ add ax,[GL_DY]
  mov [GL_ERR],ax
 
 LDS_LOOP:
@@ -2501,12 +2826,10 @@ LDS_LOOP:
 
  ; done if current == target
  mov ax,[GL_X1]
- mov cx,[GL_X2]
- cmp ax,cx
+ cmp ax,[GL_X2]
  jne LDS_CONT
  mov ax,[GL_Y1]
- mov cx,[GL_Y2]
- cmp ax,cx
+ cmp ax,[GL_Y2]
  je LDS_DONE
 
 LDS_CONT:
@@ -2517,36 +2840,26 @@ LDS_CONT:
 
  ; if e2 >= dy then err += dy, x += sx
  mov ax,[GL_E2]
- mov cx,[GL_DY]
- cmp ax,cx
+ cmp ax,[GL_DY]
  jl LDS_SKIP_X
 
- mov ax,[GL_ERR]
- mov cx,[GL_DY]
- add ax,cx
- mov [GL_ERR],ax
+ mov ax,[GL_DY]
+ add [GL_ERR],ax
 
- mov ax,[GL_X1]
- mov cx,[GL_SX]
- add ax,cx
- mov [GL_X1],ax
+ mov ax,[GL_SX]
+ add [GL_X1],ax
 
 LDS_SKIP_X:
  ; if e2 <= dx then err += dx, y += sy
  mov ax,[GL_E2]
- mov cx,[GL_DX]
- cmp ax,cx
+ cmp ax,[GL_DX]
  jg LDS_SKIP_Y
 
- mov ax,[GL_ERR]
- mov cx,[GL_DX]
- add ax,cx
- mov [GL_ERR],ax
+ mov ax,[GL_DX]
+ add [GL_ERR],ax
 
- mov ax,[GL_Y1]
- mov cx,[GL_SY]
- add ax,cx
- mov [GL_Y1],ax
+ mov ax,[GL_SY]
+ add [GL_Y1],ax
 
 LDS_SKIP_Y:
  jmp LDS_LOOP
@@ -2569,7 +2882,7 @@ WRITE_RAW:
  xor cx,cx
  mov cl,[si]
  inc si
- cmp cx,0
+ or cx,cx
  je WRITE_RAW_CD
  push cx              ; save string length
  mov ah,03h
@@ -2624,6 +2937,13 @@ WRITE_CRLFH:
  pop cx
  pop ax
  ret
+%ifdef USE_FI
+WRITE_RAWCRLF2:
+ mov al,2
+ call GETHOUT
+ call WRITE_RAW
+ jmp WRITE_CRLFH
+%endif
 %endif
 
 %ifdef USE_PN
@@ -2679,14 +2999,13 @@ WRITE_NUMH:
  push dx
  push si
  mov si,bx
- cmp ax,0
+ or ax,ax
  jne WNH_CH_SIGN
  mov al,'0'
  mov bx,si
  call WRITE_CHH
  jmp WNH_DONE
 WNH_CH_SIGN:
- test ax,ax
  jns WNH_NONZERO
  push ax
  mov al,'-'
@@ -2702,7 +3021,7 @@ WNH_LOOP:
  div bx
  push dx
  inc cx
- cmp ax,0
+ or ax,ax
  jne WNH_LOOP
 WNH_OUT:
  pop dx
@@ -2744,7 +3063,7 @@ SEEK_BYTEH:
 SEEKB_BADPOS:
  mov dx,OFFSET BI_POSERR
  mov cx,12
- jmp BI_ABORT
+ jmp RT_ABORT
 SEEKB_OK:
  ret
 
@@ -2757,7 +3076,7 @@ READ_BYTEH:
  mov dx,OFFSET NB
  int 21h
  jc READB_ERR
- cmp ax,0
+ or ax,ax
  je READB_EOF
  cmp ax,1
  jne READB_ERR
@@ -2773,17 +3092,17 @@ READB_EOF:
  pop bx
  mov dx,OFFSET BI_EOFERR
  mov cx,13
- jmp BI_ABORT
+ jmp RT_ABORT
 READB_ERR:
  pop dx
  pop cx
  pop bx
  mov dx,OFFSET BI_RDERR
  mov cx,15
- jmp BI_ABORT
+ jmp RT_ABORT
 
 WRITE_BYTEH:
- cmp ah,0
+ or ah,ah
  jne WRITEB_VALERR
  push bx
  push cx
@@ -2817,7 +3136,6 @@ WRITEB_DONE:
 WRITEB_VALERR:
  mov dx,OFFSET BVERR
  mov cx,16
-BI_ABORT:
  jmp RT_ABORT
 
 ; -------------------------------------------------
@@ -2856,9 +3174,11 @@ BIFLUSH_ERR:
  pop cx
  pop bx
  pop ax
+ ; Avoid retrying the same failed buffer from RT_ABORT -> RT_EXIT_AL.
+ mov BYTE [BILEN],0
  mov dx,OFFSET BI_WRERR
  mov cx,16
- jmp BI_ABORT
+ jmp RT_ABORT
  
  
 ; -------------------------------------------------
@@ -2939,7 +3259,7 @@ POKED:
  mov ax,[PSEG]
 
 POKEC:
- cmp ch,0
+ or ch,ch
  jne PK_VALERR
  push es
  mov es,ax
@@ -2974,7 +3294,7 @@ INPC:
  ret
 
 OUTC:
- cmp ah,0
+ or ah,ah
  jne IO_VALERR
  DB 238              ; OUT DX,AL
  ret
@@ -3009,8 +3329,6 @@ IO_VALERR:
 XAERR:
  db "XARRAY ERROR"
 
-XA_ABORT:
- jmp RT_ABORT
 
 ; -------------------------------------------------
 ; XAALLOC
@@ -3021,6 +3339,7 @@ XA_ABORT:
 ; -------------------------------------------------
 XAALLOC:
  call MEMINIT
+ jc XAALLOC_MEMFAIL
  push bx
  push cx
  push dx
@@ -3035,7 +3354,7 @@ XAALLOC:
 
  mov cx,ax              ; CX = Count
 
- cmp bx,0
+ or bx,bx
  jne XAALLOC_LN_GVN
  mov bx,255             ; default maxlen
 
@@ -3053,7 +3372,7 @@ XAALLOC_LN_GVN:
  mul bp                 ; DX:AX = Count * slot size
 
  ; allowed: at most 65536 bytes
- cmp dx,0
+ or dx,dx
  jne XAALLOC_CHK64K
 
  ; Bytes < 65536
@@ -3069,7 +3388,7 @@ XAALLOC_LN_GVN:
 XAALLOC_CHK64K:
  cmp dx,1
  jne XAALLOC_FAIL
- cmp ax,0
+ or ax,ax
  jne XAALLOC_FAIL
  mov bx,4096            ; exactly 65536 bytes
 
@@ -3088,7 +3407,7 @@ XAALLOC_FIND:
  jmp XAALLOC_FAIL
 
 XAALLOC_FOUND:
- ; BX = Paragraphen
+ ; BX = Paragraphs
  ; CX = Count
  ; BP = slot size
  ; DX = slot number
@@ -3119,6 +3438,9 @@ XAALLOC_FOUND:
  inc ax                 ; handle = slot + 1
  jmp XAALLOC_DONE
 
+XAALLOC_MEMFAIL:
+ xor ax,ax
+ ret
 XAALLOC_FAIL:
  xor ax,ax
 
@@ -3169,7 +3491,7 @@ XAPTR:
  mov ax,bx
  mov bx,[XALEN+si]
  mul bx                 ; DX:AX = Offset
- cmp dx,0
+ or dx,dx
  jne XAPTR_ERR
 
  mov di,ax
@@ -3184,13 +3506,13 @@ XAPTR:
 XAPTR_ERR:
  mov dx,OFFSET XAERR
  mov cx,12
- jmp XA_ABORT
+ jmp RT_ABORT
 
 ; -------------------------------------------------
 ; XACOPY_2EXT
 ; In : DS:SI = source, counted string
 ;      ES:DI = destination slot
-;      CX    = max. payload length des Zielslots
+;      CX = maximum payload length of destination slot
 ;
 ; Effect:
 ;   Copies at most CX payload bytes.
@@ -3210,7 +3532,7 @@ XACOPY_2EXT:
 XACTE_LEN_OK:
  stosb                  ; destination length byte
  mov cl,al
- cmp cl,0
+ or cl,cl
  je XACTE_DONE
  rep movsb
 
@@ -3225,7 +3547,7 @@ XACTE_DONE:
 ; XACOPY_EXT
 ; In : ES:SI = source slot
 ;      DS:DI = destination counted string
-;      CX    = max. payload length des Quellslots
+;      CX = maximum payload length of source slot
 ;
 ; Effect:
 ;   Robust against corrupt length bytes:
@@ -3247,7 +3569,7 @@ XACFE_LEN_OK:
  inc si
  inc di
  mov cl,al
- cmp cl,0
+ or cl,cl
  je XACFE_DONE
 
 XACFE_LOOP:
@@ -3340,7 +3662,7 @@ XAFREE:
 XAFREE_ERR:
  mov dx,OFFSET XAERR
  mov cx,12
- jmp XA_ABORT
+ jmp RT_ABORT
 
 %endif
 
@@ -3354,7 +3676,7 @@ XAFREE_ERR:
 ;
 ; Large INT arrays:
 ;   [si]/[di]     = 255  ; marker for external array
-;   [si+1]/[di+1] = handle 1..8
+;   [si+1]/[di+1] = handle 1..16
 ;
 ; External INT arrays use DOS memory:
 ;   XISEG[slot] = segment
@@ -3370,23 +3692,21 @@ XICNT: times 16 dw 0
 ;   DX = message
 ;   CX = length
 ; -------------------------------------------------
-ARR_ABORT:
- jmp RT_ABORT
 
 ARR_SIZE_ERR:
  mov dx,OFFSET ARRDERR
  mov cx,14
- jmp ARR_ABORT
+ jmp RT_ABORT
 
 ARR_INDEX_ERR:
  mov dx,OFFSET ARRIERR
  mov cx,17
- jmp ARR_ABORT
+ jmp RT_ABORT
 
 ARR_MEM_ERR:
  mov dx,OFFSET ARRMERR
  mov cx,18
- jmp ARR_ABORT
+ jmp RT_ABORT
 
 ARRDERR:
  db "BAD ARRAY SIZE"
@@ -3400,13 +3720,14 @@ ARRMERR:
 ; -------------------------------------------------
 ; XIALLOC
 ; In : AX = number of elements 1..32767
-; Out: AX = handle 1..8, AX=0 on error
+; Out: AX = handle 1..16, AX=0 on error
 ;
 ; Memory requirement:
 ;   count * 2 bytes, rounded to paragraphs.
 ; -------------------------------------------------
 XIALLOC:
  call MEMINIT
+ jc XIALLOC_MEMFAIL
 
  push bx
  push cx
@@ -3481,6 +3802,9 @@ XIALLOC_FOUND:
  inc ax
  jmp XIALLOC_DONE
 
+XIALLOC_MEMFAIL:
+ xor ax,ax
+ ret
 XIALLOC_FAIL:
  xor ax,ax
 
@@ -3495,7 +3819,7 @@ XIALLOC_DONE:
 
 ; -------------------------------------------------
 ; XIPTR
-; In : AX = handle 1..8
+; In : AX = handle 1..16
 ;      BX = index 1..Count
 ; Out: ES:DI = address of the INT element
 ; -------------------------------------------------
@@ -3621,22 +3945,16 @@ XIFREE_ERR:
 ; -------------------------------------------------
 ARRFREE_DESC:
  push ax
-
  cmp BYTE [di],255
- jne ARRFREE_DD
-
+ jne ARRFREE_DC
  xor ax,ax
  mov al,[di+1]
- cmp ax,0
+ or ax,ax
  je ARRFREE_DC
-
  call XIFREE
-
 ARRFREE_DC:
  mov BYTE [di],0
  mov BYTE [di+1],0
-
-ARRFREE_DD:
  pop ax
  ret
 
@@ -3672,7 +3990,7 @@ ARRCLR:
 
  ; large external array
  call XIALLOC
- cmp ax,0
+ or ax,ax
  je ARRCLR_NOMEM
 
  mov BYTE [di],255
@@ -3819,28 +4137,22 @@ TIMERC:
  push dx
  mov ah,2Ch
  int 21h
- mov [TM_HH],ch
- mov [TM_MM],cl
- mov [TM_SS],dh
- xor ax,ax
- mov al,[TM_HH]
- mov bx,60
- mul bx
- xor bx,bx
- mov bl,[TM_MM]
+ mov bl,cl
+ mov cl,dh
+ mov al,ch
+ xor ah,ah
+ mov dx,60
+ mul dx
+ xor bh,bh
  add ax,bx
  mov bx,60
  mul bx
- xor bx,bx
- mov bl,[TM_SS]
- add ax,bx
+ xor ch,ch
+ add ax,cx
  pop dx
  pop cx
  pop bx
  ret
-TM_HH db 0
-TM_MM db 0
-TM_SS db 0
 %endif
 
 %ifdef USE_D2
@@ -4052,7 +4364,7 @@ EX_SETPROG:
 EXSP_LEN_OK:
  mov di,OFFSET EX_PROG
 EXSP_COPY:
- cmp cl,0
+ or cl,cl
  je EXSP_END
  mov al,[si]
  mov [di],al
@@ -4096,6 +4408,7 @@ EXSP_ZERO:
 
 EXECC:
  call MEMINIT
+ jc EXECC_MEMFAIL
  push ds
  push bx
  push cx
@@ -4120,7 +4433,7 @@ EXECC:
  xor cx,cx
  mov cl,[si]
  inc si
- cmp cl,0
+ or cl,cl
  jne EXC_HAVE_ARGS
  mov BYTE [di],0
  inc di
@@ -4142,7 +4455,7 @@ EXC_ARG_LEN_OK:
  mov BYTE [di],13
 
 EXC_BUILD_PB:
- mov ax,0
+ xor ax,ax
  mov [EX_PB_ENV],ax
  mov ax,OFFSET EX_CMDTAIL
  mov [EX_PB_CMD_OFF],ax
@@ -4174,7 +4487,7 @@ mov ax,4B00h
  mov ah,4Dh
  int 21h              ; AH = termination type, AL = child return code
 
- cmp ah,0
+ or ah,ah
  jne EXC_ABTERM
 
  ; Normal child termination: return AL as AX = 0..255
@@ -4209,6 +4522,9 @@ EXC_SAVE:
  pop bx
  mov ax,[EX_RETCODE]
  pop ds
+ ret
+EXECC_MEMFAIL:
+ neg ax
  ret
 
 EX_PARAMBLK:
@@ -4279,7 +4595,7 @@ CPUIDC:
  DB 156              ; PUSHF
  pop ax
  and ax,7000H
- cmp ax,0
+ or ax,ax
  je CP_80286
 
   ; -------------------------------------------------
@@ -4390,7 +4706,7 @@ CP_LT286:
  ; -------------------------------------------------
  ; Intel 8086/8088 vs. Intel 80186/80188:
  ; 80186 masks variable shift counts to 5 bits.
- ; 8086 shifts mit full CL-value.
+ ; 8086 shifts by the full CL value.
  ; FFh >> 33:
  ;   8086  -> 0
  ;   80186 -> 7Fh, because 33 & 31 = 1
@@ -4462,8 +4778,8 @@ CP_FLG dw 0
 ; regs(6) = DI
 ; regs(7) = FLAGS output only
 ;
-; Segment registers are intentionally not user-settable
-; in this minimal version.
+; This CALLINT interface intentionally exposes only the
+; general-purpose registers and returned FLAGS.
 ; =================================================
 
 IX_NO    db 0
@@ -4477,7 +4793,7 @@ IX_DI    dw 0
 IX_FL    dw 0
 
 CALLINTC:
- cmp ah,0
+ or ah,ah
  jne IX_VALERR
  mov [IX_NO],al
  mov [IX_DESC],si
@@ -4604,12 +4920,12 @@ READW:
  cmp WORD [DATCNT],0
  jne READW_HAVE
  mov bx,[DATREC]
- cmp bx,0
+ or bx,bx
  je READW_OOD
  mov ax,[bx]
  mov [DATREC],ax
  mov ax,[bx+2]
- cmp ax,0
+ or ax,ax
  je READW_OOD
  mov [DATCNT],ax
  add bx,4
@@ -4632,12 +4948,12 @@ DAERR:
  db "OUT OF DATA"
 %endif
 
+%ifdef USE_BK
 ; =================================================
 ; BREAK / CTRL-C support
 ;
 ; BIOS-only break check:
-;   - no REQ BK needed
-;   - no USE_BK conditional
+;   - enabled through REQ BK / USE_BK
 ;   - no INT 23h handler registration
 ;   - no DOS AH=0Bh polling
 ;
@@ -4676,7 +4992,7 @@ BRKCHK:
  je BRKCHK_ABORT
 
  ; Ctrl-Break: many BIOSes report a zero word but ZF=0.
- cmp ax,0
+ or ax,ax
  je BRKCHK_ABORT
 
 BRKCHK_DONE:
@@ -4690,20 +5006,73 @@ BRKCHK_ABORT:
  pop ax
  mov al,130
  jmp RT_EXIT_AL
+%endif
+
+%ifdef STACKMON
+; -------------------------------------------------
+; Stack high-water report for the private runtime stack.
+; The stack was filled with A55Ah before it became active.
+; Output: STACK MAX n followed by CR/LF.
+; -------------------------------------------------
+SM_EXIT db 0
+SM_MSG db "STACK MAX "
+STACK_REPORT:
+ mov si,OFFSET ENDPROG
+%ifdef STACK256
+ mov di,OFFSET ENDPROG+256
+%else
+ mov di,OFFSET ENDPROG+128
+%endif
+SM_SCAN:
+ cmp si,di
+ jae SM_FOUND
+ cmp WORD [si],0A55Ah
+ jne SM_FOUND
+ add si,2
+ jmp SM_SCAN
+SM_FOUND:
+ mov ax,di
+ sub ax,si
+ push ax
+ mov dx,OFFSET SM_MSG
+ mov cx,10
+ mov bx,1
+ mov ah,40h
+ int 21h
+ pop ax
+ xor cx,cx
+ mov bx,10
+SM_DIV:
+ xor dx,dx
+ div bx
+ push dx
+ inc cx
+ or ax,ax
+ jne SM_DIV
+SM_OUT:
+ pop dx
+ add dl,'0'
+ mov ah,02h
+ int 21h
+ loop SM_OUT
+ mov dx,OFFSET C
+ mov cx,2
+ mov bx,1
+ mov ah,40h
+ int 21h
+ mov al,[SM_EXIT]
+ jmp RT_EXIT_DOS
+%endif
 
 %ifdef USE_MEM
 ; -------------------------------------------------
-; Runtime stack for external DOS memory use.
-; Used by XA string arrays and large INT arrays
-; use it.
-; Must be before ENDPROG because MEMINIT calculates the size
-; of the COM block from ENDPROG.
+; Reserve the selected stack size after the loaded image through MEMINIT.
+; Default: 128 bytes. Define STACK256 for 256 bytes.
+; These bytes are present in memory, but not stored in the COM file.
 ; -------------------------------------------------
-RT_STACK_AREA:
- times 1024 db 0
-RT_STACK_TOP:
 %endif
 
 ENDPROG:
 
 ; for determining the actual COM size by MEMINIT.
+
